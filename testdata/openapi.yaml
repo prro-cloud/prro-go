@@ -1,0 +1,2138 @@
+# OpenAPI contract of prro-service's PUBLIC machine API — what an integrator
+# writes against, and the only half of the service that is published. It
+# leaves the server as it is: the landing serves this exact file at
+# /api/openapi.yaml, so nothing may enter it that we would not hand a
+# stranger.
+#
+# Its sibling api/internal.yaml describes the cabinet, the operator zone and
+# the logins behind them; the panel (web-spa) generates its TypeScript client
+# from that one. The split is by tag — system, fiscal, billing and webhooks
+# here, cabinet/operator/cabinet-auth/auth there — and it is the same line the
+# runtime draws: this half answers on the public listener, that one on
+# CABINET_ADDR (docs/api-split-plan.md).
+#
+# Components both halves need live HERE and are reached from internal.yaml by
+# an external $ref, so this file never depends on that one and always stands
+# alone. Grows stage by stage together with the backend
+# (docs/prro-service-plan.md).
+#
+# Every rendered field — summary, description, prose examples — is written in
+# Ukrainian: this file generates the integrator-facing documentation, and the
+# service already speaks Ukrainian everywhere a client can hear it
+# (faults.Localize and apiv1.Lang both fall back to "uk"). These "#" comments
+# are the other audience — whoever edits the contract — and stay English with
+# the rest of the code.
+#
+# House style of the rendered text, kept as it is on every later edit:
+#
+#   1. summary is ONE short line — a noun phrase or an imperative, never a
+#      ">-" block, never a parenthesis carrying mechanics. If it does not
+#      fit, the overflow is a description, not a longer summary.
+#   2. description states the rule and its limits: shape, constraints,
+#      defaults, what fails and with which status, where the caller gets the
+#      value. Nothing else.
+#   3. Why we settled on something — history, alternatives rejected, how it
+#      is implemented, which transaction writes it — belongs in these "#"
+#      comments, never in a rendered field.
+#   4. Register of a reference manual: neutral, factual, no metaphors, no
+#      anthropomorphism ("лічильник живе", "період з'їв"), no guessing at
+#      what the reader is trying to do.
+#   5. Nothing internal is nameable here: not the operational CLI, not the
+#      cabinet's or operator's internals, not infrastructure (KEK, NATS,
+#      the database). Components shared with internal.yaml are phrased so
+#      they read correctly for both audiences.
+#   6. Only /v1 exists in this document, and now in the runtime too — the
+#      prefix the API answered on before it was removed in 2026-09.
+#
+# info.version is maintained from 2026-07-19 on, semver over the contract
+# itself and nothing else (not the service build, which carries its own
+# version): patch for wording, minor for anything additive, major for a
+# change that breaks an existing client. It restarts at 0.1.0 here because
+# the number it replaces had sat untouched since the scaffold and meant
+# nothing. Bump it in the same commit that changes the contract.
+openapi: 3.1.0
+info:
+  title: prro-service API
+  description: >-
+    REST API сервісу фіскалізації ПРРО. Шляхи наведено від кореня базової
+    адреси.
+
+
+    Автентифікація — Bearer JWT, виданий у кабінеті. Сам кабінет має
+    окремий вхід і тут не описаний.
+  version: 0.5.0
+
+paths:
+  /v1/version:
+    get:
+      operationId: getVersion
+      summary: Версія збірки сервісу
+      tags: [system]
+      responses:
+        "200":
+          description: Версія, зашита у збірку.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version]
+                properties:
+                  version:
+                    description: >-
+                      Тег збірки: dev у локальній збірці, інакше версія релізу.
+                    type: string
+                    examples: ["dev", "v0.3.0"]
+
+  /v1/whoami:
+    get:
+      operationId: whoami
+      summary: Клієнт і дозволи наданого токена
+      tags: [system]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Клієнт, дозволи (scopes) та обмеження за касами.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [client_id, scopes, jti, all_cash_registers]
+                properties:
+                  client_id:
+                    type: string
+                    format: uuid
+                    description: Клієнт, від імені якого діє токен.
+                  scopes:
+                    description: Дозволи, видані токену.
+                    type: array
+                    items: { type: string }
+                  all_cash_registers:
+                    type: boolean
+                    description: >-
+                      true — токен діє на всі каси клієнта (поточні й майбутні);
+                      false — лише на перелічені у cash_registers.
+                  cash_registers:
+                    type: array
+                    description: >-
+                      Присутнє лише для обмеженого токена — перелік uuid кас, до
+                      яких він прив'язаний. Відсутнє, коли all_cash_registers.
+                    items: { type: string, format: uuid }
+                  jti:
+                    type: string
+                    format: uuid
+                    description: >-
+                      Ідентифікатор токена — за ним його відкликають у
+                      кабінеті.
+                  expires_at:
+                    type: string
+                    format: date-time
+                    description: Коли токен спливає; у безстрокового відсутнє.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/receipts:
+    post:
+      operationId: createReceipt
+      summary: Зареєструвати розрахунковий документ
+      description: >-
+        Типи документів: sale — реалізація, return — повернення, storno —
+        сторно, service_in — службове внесення, service_out — інкасація.
+
+
+        Сервіс проходить повний фіскальний цикл: локальний номер, XML за
+        check01, підпис КЕП (CAdES-T), надсилання до ДПС, квитанція. Режим
+        sync (типовий) чекає на результат до 30 секунд і віддає 202 з
+        номером завдання, якщо не дочекався; async віддає 202 одразу.
+
+
+        Idempotency-Key обов'язковий: повтор із тим самим ключем повертає те
+        саме завдання, а не реєструє другий документ.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Mode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReceiptInput" }
+      responses:
+        "201":
+          description: Зареєстровано в межах синхронного очікування.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "200":
+          description: Повтор за тим самим Idempotency-Key; завдання вже завершене.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "202":
+          description: Ще виконується; статус — через GET /tasks/{id}.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402":
+          description: >-
+            Баланс опустився нижче порога: нові чеки заблоковано до
+            поповнення. Операції зі змінами лишаються доступними.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Цей Idempotency-Key уже використано для іншої операції.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: >-
+            Не пройшла валідація або завдання завершилося помилкою (немає
+            відкритої зміни, відмова ДПС тощо).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/tasks/{id}:
+    get:
+      operationId: getTask
+      summary: Статус і результат завдання
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор завдання з відповіді на фіскальну операцію.
+      responses:
+        "200":
+          description: Завдання в поточному стані.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers:
+    get:
+      operationId: listCashRegistersForToken
+      summary: Каси, доступні токену
+      description: >-
+        Токен без обмежень бачить усі каси клієнта, обмежений — лише свої.
+        Звідси беруть cash_register_id для решти маршрутів. Поточний стан
+        каси — у GET /v1/cash-registers/{id}.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Каси в межах токена, від найстаріших.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cash_registers]
+                properties:
+                  cash_registers:
+                    description: Каси в межах токена, від найстаріших.
+                    type: array
+                    items: { $ref: "#/components/schemas/CashRegisterListItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/cash-registers/{id}:
+    get:
+      operationId: getCashRegisterState
+      summary: Стан реєстратора (зміна, режим, лічильники)
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+      responses:
+        "200":
+          description: Поточний стан реєстратора.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CashRegisterState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/shifts:
+    post:
+      operationId: openShift
+      summary: Відкрити зміну
+      description: >-
+        Завдання, режими доставки та Idempotency-Key — як у POST
+        /v1/receipts.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Mode"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cashier:
+                  type: string
+                  description: Ім'я касира, яке друкують у документі відкриття зміни.
+                mode:
+                  type: string
+                  enum: [sync, async]
+                  default: sync
+                  description: >-
+                    Режим доставки результату; параметр запиту ?mode= має
+                    перевагу над цим полем.
+      responses:
+        "201":
+          description: Зміну відкрито.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "202":
+          description: Ще виконується; статус — через GET /tasks/{id}.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/shifts/current:
+    delete:
+      operationId: closeShift
+      summary: Закрити поточну зміну
+      description: >-
+        Однією операцією формує Z-звіт і документ закриття зміни.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Mode"
+      responses:
+        "201":
+          description: >-
+            Зміну закрито; у результаті — і Z-звіт, і документ закриття.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "202":
+          description: Ще виконується; статус — через GET /tasks/{id}.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/offline-session/close:
+    post:
+      operationId: closeOfflineSession
+      summary: Передати й завершити офлайн-сесію зараз
+      description: >-
+        Передає пакети сесії до ДПС і завершує її, не чекаючи фонової передачі.
+        Каса повертається онлайн лише після того, як ДПС прийняла всі документи
+        сесії. Якщо ДПС недоступна, операція відхиляється з кодом
+        state.offline_close_needs_dps — сесію буде передано й завершено
+        автоматично, щойно зв'язок відновиться.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Mode"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cashier:
+                  type: string
+                  description: Ім'я касира, яке друкують у документі завершення сесії.
+                mode:
+                  type: string
+                  enum: [sync, async]
+                  default: sync
+                  description: >-
+                    Режим доставки результату; параметр запиту ?mode= має
+                    перевагу над цим полем.
+      responses:
+        "201":
+          description: Сесію закрито; у результаті — документ завершення.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "202":
+          description: Ще виконується; статус — через GET /tasks/{id}.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/offline-session/retry:
+    post:
+      operationId: retryOfflineSubmission
+      summary: Відновити надсилання офлайн-пакетів
+      description: >-
+        Сервіс зупиняє надсилання, коли ДПС відхиляє пакет сесії. Спершу
+        усуньте причину, потім викликайте цей маршрут. Сесію, яку ДПС не
+        прийме ніколи, закривають через .../offline-session/abandon.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+      responses:
+        "200":
+          description: Скільки сесій повернуто до надсилання.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resumed_sessions]
+                properties:
+                  resumed_sessions:
+                    type: integer
+                    description: >-
+                      Скільки сесій повернуто до надсилання; 0 — зупинених не
+                      було.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/offline-session/abandon:
+    post:
+      operationId: abandonOfflineSession
+      summary: Відмовитися від офлайн-сесії, яку не приймає ДПС
+      description: >-
+        Доступно лише для сесії, надсилання якої зупинено (state.offline_backlog_undeliverable),
+        і лише коли ДПС відповідає; інакше — state.offline_session_not_paused
+        або state.offline_abandon_needs_dps. Документи сесії, яких ДПС не
+        отримала, позначаються abandoned: їхні офлайн-фіскальні номери в ДПС не
+        існують, а локальні номери переходять до наступних документів. Сесію
+        завершують у ДПС на тому, що вона вже має, і каса отримує нові
+        офлайн-ключі. Перелік покинутих документів — у результаті та в події
+        register.offline_abandoned; чи видавати їх знову, вирішує інтеграція.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Mode"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [sync, async]
+                  default: sync
+                  description: >-
+                    Режим доставки результату; параметр запиту ?mode= має
+                    перевагу над цим полем.
+      responses:
+        "201":
+          description: Від сесії відмовлено; у результаті — offline_abandon.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "202":
+          description: Ще виконується; статус — через GET /tasks/{id}.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/attention:
+    delete:
+      operationId: clearRegisterAttention
+      summary: Зняти позначку «потребує уваги» з реєстратора
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+      responses:
+        "200":
+          description: Чи справді було знято позначку.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cleared]
+                properties:
+                  cleared: { type: boolean, description: "false означає, що позначки й не було." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/cash-registers/{id}/cash-balance:
+    put:
+      operationId: setCashBalance
+      # Why a declaration rather than a fiscal document: filing a службове
+      # внесення for money that was already in the drawer would be wrong twice
+      # over — it did not enter today, and it would inflate SERVICEINPUT in the
+      # shift's Z-report.
+      summary: Заявити фактичний залишок готівки
+      description: >-
+        Переставляє лічильник готівки на перераховану суму — коли касу
+        підключили з непорожнім ящиком або лічильник розійшовся з фактом.
+
+
+        Операція не фіскальна: заявлений залишок не потрапляє в документи і
+        не змінює підсумків зміни. Рух готівки реєструють чеком service_in
+        або service_out. Від'ємне значення — 422.
+      tags: [fiscal]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор каси — uuid із GET /v1/cash-registers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  allOf:
+                    - $ref: "#/components/schemas/CashAmount"
+                  description: Перерахований залишок; не може бути від'ємним.
+      responses:
+        "200":
+          description: Лічильник після заяви.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CashBalanceDeclaration" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/billing/usage:
+    get:
+      operationId: billingUsage
+      summary: Передплачений баланс і підсумок тарифікації за період
+      description: >-
+        Суми — копійки десятковим рядком. Типовий період — поточний
+        календарний місяць за UTC, межа `to` не включається; період понад 366
+        днів — 422. Тарифікація асинхронна, тож підсумок може відставати від
+        останнього чека на кілька секунд.
+      tags: [billing]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: >-
+            Початок періоду, включно (дата за UTC); типово — перше число
+            поточного місяця.
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: >-
+            Кінець періоду, не включно; типово — перше число наступного місяця.
+            Понад 366 днів — 422.
+      responses:
+        "200":
+          description: Баланс і використання за період.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingUsage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/invoices:
+    get:
+      operationId: listInvoices
+      summary: Рахунки клієнта, від найновішого періоду
+      description: >-
+        Один рядок на розрахунковий період, а не на окремий платіж.
+      tags: [billing]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: >-
+            Скільки рахунків повернути: 1–200, типово 50.
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: Скільки рахунків пропустити — посторінковий обхід.
+      responses:
+        "200":
+          description: Рахунки клієнта.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoices]
+                properties:
+                  invoices:
+                    description: Рахунки, від найновішого періоду.
+                    type: array
+                    items: { $ref: "#/components/schemas/Invoice" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/webhooks:
+    get:
+      operationId: listWebhooks
+      summary: Перелік вебхуків клієнта (без секретів)
+      tags: [webhooks]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Точки доставки клієнта.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks]
+                properties:
+                  webhooks:
+                    description: Точки доставки клієнта; секрети не повертаються.
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createWebhook
+      summary: Зареєструвати вебхук
+      description: >-
+        Доставка — POST з тілом {delivery_id, event, attempt, occurred_at,
+        data} і заголовком X-Signature вигляду "sha256=<HMAC-SHA256 тіла у
+        hex>", порахованим на секреті цієї точки доставки.
+
+
+        Гарантія — «щонайменше один раз»: приймач має відкидати повтори за
+        delivery_id. Події одного реєстратора приходять по порядку.
+      tags: [webhooks]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: Абсолютний http(s)-URL приймача. }
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/WebhookEvent" }
+                  description: >-
+                    Події, на які підписані; порожній список або відсутнє поле
+                    означає всі події.
+                secret: { type: string, description: "Секрет HMAC; якщо не вказати, згенерує сервер." }
+      responses:
+        "201":
+          description: Створено; секрет повертається рівно один раз.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebhookEndpoint"
+                  - type: object
+                    required: [secret]
+                    properties:
+                      secret: { type: string, description: Отримати повторно неможливо. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/webhooks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: Ідентифікатор вебхука.
+    patch:
+      operationId: updateWebhook
+      summary: Змінити URL, підписку або активність вебхука
+      tags: [webhooks]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, description: "Новий абсолютний http(s)-URL приймача." }
+                events:
+                  description: Новий перелік подій; порожній список означає всі.
+                  type: array
+                  items: { $ref: "#/components/schemas/WebhookEvent" }
+                active: { type: boolean, description: "false призупиняє доставку, не втрачаючи черги." }
+      responses:
+        "200":
+          description: Оновлено.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteWebhook
+      summary: Видалити вебхук
+      tags: [webhooks]
+      security:
+        - bearerAuth: []
+      responses:
+        "204": { description: "Видалено; недоставлені події переведено в dead." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: Історія доставок вебхука
+      tags: [webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор вебхука.
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, delivering, delivered, failed, dead]
+          description: Показати лише доставки в цьому стані.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: >-
+            Скільки доставок повернути: 1–200, типово 50.
+      responses:
+        "200":
+          description: Доставки.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveries]
+                properties:
+                  deliveries:
+                    description: Доставки, від найновішої.
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/webhooks/{id}/deliveries/{deliveryId}/replay:
+    post:
+      operationId: replayWebhookDelivery
+      summary: Повторити доставку
+      description: >-
+        Повертає доставку — зазвичай невдалу — в чергу з новим запасом
+        спроб.
+      tags: [webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор вебхука.
+        - name: deliveryId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Ідентифікатор доставки з історії.
+      responses:
+        "200":
+          description: >-
+            Повернуто в чергу. Пізніші події того самого реєстратора чекають
+            на неї: порядок зберігається.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Саме зараз триває спроба доставки.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/system/dps:
+    get:
+      operationId: systemDPSStatus
+      summary: Поточний режим роботи з ДПС (онлайн/офлайн)
+      description: >-
+        Режим, у якому сервіс зараз працює з ДПС; доступний будь-якому
+        машинному токену.
+      tags: [system]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Режим роботи з ДПС і телеметрія, що його пояснює.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DPSPulse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Довгоживучий машинний JWT, виданий у кабінеті. Токен без обмежень
+        діє на всі каси клієнта, поточні й майбутні. Обмежений: касові
+        операції поза його переліком — 404 (існування каси не
+        розкривається), ресурси рівня клієнта (білінг, вебхуки) — 403.
+  parameters:
+    Mode:
+      name: mode
+      in: query
+      required: false
+      schema: { type: string, enum: [sync, async] }
+      description: >-
+        Режим доставки результату; має перевагу над однойменним полем у тілі.
+        sync (типовий) чекає на результат у межах синхронного очікування;
+        async одразу віддає 202 і номер завдання.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string }
+      description: >-
+        Ключ операції, який обирає клієнт. Повтор запиту з тим самим ключем
+        поверне початкове завдання, а не виконає фіскальну операцію вдруге.
+
+  responses:
+    Error:
+      description: Конверт помилки.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: >-
+        Немає облікових даних, або вони недійсні, протерміновані чи відкликані.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      description: >-
+        Конверт помилки: машинний код, текст для людини і подробиці, якщо
+        вони є.
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          examples: [unauthorized, validation_failed]
+          description: >-
+            Стабільний машинний код помилки; саме на нього реагує інтеграція.
+        message:
+          type: string
+          description: >-
+            Пояснення для людини; покладатися на його текст програмно не можна.
+        details:
+          description: >-
+            Подробиці помилки, коли вони є, — наприклад перелік полів, які не
+            пройшли валідацію.
+
+    CashRegisterState:
+      description: >-
+        Поточний стан реєстратора: режим, зміна, готівка, офлайн-сесія.
+      type: object
+      required: [id, fiscal_number, local_number, mode, state, offline_limits]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: >-
+            Ідентифікатор каси в цьому API — те саме значення, що
+            cash_register_id чека.
+        fiscal_number:
+          type: string
+          description: Фіскальний номер ПРРО, присвоєний ДПС, — «ФН ПРРО» на чеку.
+        local_number: { type: string, description: "CASHDESKNUM: власний номер каси у клієнта." }
+        mode:
+          type: string
+          enum: [production, test]
+          description: >-
+            production — бойовий режим; test — документи позначені як тестові.
+        state:
+          type: string
+          enum: [closed, opened, offline]
+          description: >-
+            closed — зміна закрита; opened — відкрита; offline — триває
+            офлайн-сесія.
+        offline_ready:
+          type: boolean
+          description: >-
+            Чи має реєстратор видані ДПС офлайн-реквізити (приходять із
+            квитанцією на відкриття зміни).
+        shift_mode:
+          $ref: "#/components/schemas/ShiftMode"
+        shift_close_times:
+          $ref: "#/components/schemas/ShiftCloseTimes"
+        cash_balance:
+          $ref: "#/components/schemas/CashBalance"
+        current_shift:
+          description: Поточна зміна каси; після закриття поле зникає.
+          type: object
+          properties:
+            id: { type: string, format: uuid, description: "Ідентифікатор зміни." }
+            number:
+              type: integer
+              format: int64
+              description: >-
+                Наскрізний номер зміни в межах каси («Зміна №147»).
+                Присвоюється локально: ДПС номера зміни не видає.
+            status:
+              type: string
+              enum: [opening, opened, closing, closed]
+              description: >-
+                opening і closing — операція ще в роботі; opened і closed —
+                завершена.
+            testing:
+              type: boolean
+              description: >-
+                Зміну відкрито на касі в режимі test — усі її документи тестові.
+            opened_at: { type: string, format: date-time, description: "Коли зміну відкрито." }
+            documents:
+              type: integer
+              description: >-
+                Скільки документів створила зміна — усіх видів, не лише
+                розрахункових. Відсутнє, якщо підрахунок не вдався.
+        shift_totals:
+          $ref: "#/components/schemas/ShiftTotals"
+        offline_session:
+          type: object
+          description: Присутня, поки реєстратор працює офлайн.
+          properties:
+            id: { type: string, format: uuid, description: "Ідентифікатор сесії в сервісі." }
+            dps_session_id:
+              type: integer
+              format: int64
+              description: >-
+                Номер сесії, виданий ДПС; входить у фіскальний номер офлайн-
+                документа.
+            started_at:
+              type: string
+              format: date-time
+              description: Початок сесії — від нього рахують 36-годинну межу.
+            documents:
+              type: integer
+              format: int64
+              description: Скільки документів видано в цій сесії.
+            last_significant_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: >-
+                Останній документ, що продовжує сесію; за ним рахують витрачений
+                місячний час.
+        offline_limits:
+          type: object
+          description: >-
+            Законодавчі межі офлайн-роботи в секундах: 36 годин на одну сесію
+            і 168 годин на календарний місяць. Витрачене рахують від
+            offline_session.started_at і offline_month_used_seconds.
+          required: [session_seconds, month_seconds]
+          properties:
+            session_seconds:
+              type: integer
+              format: int64
+              description: Межа однієї сесії — 36 годин у секундах.
+            month_seconds:
+              type: integer
+              format: int64
+              description: Межа на календарний місяць — 168 годин у секундах.
+        offline_month_used_seconds:
+          type: integer
+          format: int64
+          description: >-
+            Час, відпрацьований офлайн у цьому календарному місяці (за
+            київським часом).
+        attention:
+          type: object
+          description: >-
+            Присутня, коли реєстратор позначено як такий, що потребує уваги
+            (див. CashRegister.attention_reason). Знімається через DELETE
+            .../attention; зупинене надсилання офлайн-пакетів додатково
+            відновлюють через POST .../offline-session/retry.
+          required: [reason]
+          properties:
+            reason:
+              description: >-
+                recurring_remediation — розбіжності з ДПС усуваються знову і
+                знову; offline_submission_paused — надсилання офлайн-пакетів
+                зупинено; auto_close_failing — не вдається автоматичне закриття
+                зміни.
+              type: string
+              enum: [recurring_remediation, offline_submission_paused, auto_close_failing]
+            since:
+              type: string
+              format: date-time
+              nullable: true
+              description: Коли позначку поставлено.
+
+    ShiftMode:
+      type: string
+      enum: [manual, round_the_clock, working_hours]
+      description: >-
+        Як керують змінами реєстратора. `manual` — клієнт відкриває і закриває
+        їх сам. `round_the_clock` — зміна закривається в кожен із
+        shift_close_times, наступний чек відкриває нову. `working_hours` —
+        денне вікно, задане двома межами у shift_close_times. В обох керованих
+        режимах зміну відкриває перший же чек.
+    ShiftCloseTimes:
+      type: array
+      items:
+        type: string
+        pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+      description: >-
+        Час щоденного закриття зміни за київським часом; порожній рівно тоді,
+        коли shift_mode — `manual`. Час прив'язаний до годинника, а не до
+        моменту відкриття зміни.
+
+
+        Потрібно щонайменше два значення з проміжком не більше 20 годин
+        (рахуючи через опівніч). `round_the_clock` — два або більше за
+        зростанням; `working_hours` — рівно два: початок і кінець дня саме в
+        цьому порядку (вікно через опівніч — "08:00", потім "02:00").
+      example: ["09:00", "21:00"]
+
+    CashRegisterListItem:
+      type: object
+      description: >-
+        Каса в переліку: ідентифікатор для звернень і реквізити, за якими її
+        впізнає людина.
+      required: [id, fiscal_number, local_number, mode, state]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: >-
+            Ідентифікатор каси в цьому API — те саме значення, що йде в
+            cash_register_id чека і в {id} решти маршрутів.
+        fiscal_number:
+          type: string
+          description: >-
+            Фіскальний номер ПРРО, присвоєний ДПС.
+        local_number: { type: string, description: "CASHDESKNUM: власний номер каси у клієнта." }
+        org_name: { type: string, description: "Назва суб'єкта господарювання." }
+        point_name: { type: string, description: "Назва господарської одиниці — точки продажу." }
+        point_address: { type: string, description: "Адреса господарської одиниці." }
+        mode:
+          type: string
+          enum: [production, test]
+          description: >-
+            production — бойовий режим; test — документи позначені як тестові.
+        state:
+          type: string
+          enum: [closed, opened, offline]
+          description: >-
+            closed — зміна закрита; opened — відкрита; offline — триває
+            офлайн-сесія.
+
+    Task:
+      description: >-
+        Завдання фіскального конвеєра: у нього перетворюється кожен запит до
+        ДПС.
+      type: object
+      required: [task_id, type, status, created_at]
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: Ідентифікатор завдання — за ним опитують GET /v1/tasks/{id}.
+        type:
+          type: string
+          enum: [receipt, open_shift, close_shift, close_offline_session, abandon_offline_session, verify_key, sync_register, dps_objects]
+          description: >-
+            Операція завдання: receipt — розрахунковий документ; open_shift і
+            close_shift — зміна; close_offline_session — завершення
+            офлайн-сесії; abandon_offline_session — відмова від офлайн-сесії,
+            яку не приймає ДПС; verify_key — перевірка ключа КЕП; sync_register —
+            звіряння з ДПС; dps_objects — запит об'єктів власника ключа.
+        status:
+          type: string
+          enum: [pending, processing, succeeded, failed]
+          description: >-
+            pending — у черзі; processing — виконується; succeeded і failed —
+            завершено, результат у result або fault.
+        created_at: { type: string, format: date-time, description: "Коли завдання створено." }
+        finished_at:
+          type: string
+          format: date-time
+          description: Коли завдання завершилося; поки воно в роботі — відсутнє.
+        error:
+          type: string
+          description: >-
+            Текст помилки завдання; структурований опис того самого збою — у
+            fault.
+        fault: { $ref: "#/components/schemas/Fault" }
+        result: { $ref: "#/components/schemas/TaskResult" }
+
+    Fault:
+      type: object
+      description: >-
+        Структурований опис збою завдання. Простори імен коду: dps.* —
+        відмова фіскального сервера, fiscal.* — валідація документа,
+        return.* — звірка повернення з початковим чеком, signer.* — рівень
+        КЕП, state.* — стан реєстратора. Мову message задає
+        Accept-Language, типово українська.
+      required: [code, class]
+      properties:
+        code:
+          type: string
+          description: Стабільний ідентифікатор, напр. dps.check_local_number_invalid.
+        class:
+          type: string
+          enum: [resync, config, precursor, user_action, transient, request, internal]
+          description: >-
+            Що може зарадити: resync — звірити стан із ДПС; config — виправити
+            налаштування реєстратора; precursor — виконати пропущений
+            попередній крок; user_action — потрібне рішення людини; transient
+            — тимчасова недоступність, допоможе повтор; request — виправити
+            запит; internal — збій сервісу.
+        params:
+          description: Значення для підстановки в message.
+          type: object
+          additionalProperties: true
+        message:
+          type: string
+          description: Текст для людини, локалізований із каталогу помилок.
+        upstream_message:
+          type: string
+          description: Дослівне повідомлення фіскального сервера.
+        remediation:
+          type: array
+          items:
+            type: string
+            enum: [local_number_synced, shift_adopted, shift_abandoned, zreport_recovered, zreport_autofiled, register_config_filled]
+          description: Автоматичні виправлення, застосовані під час обробки завдання.
+
+    TaskResult:
+      type: object
+      description: >-
+        Фіскальні поля (prro_id/shift_id/testing/…) стосуються завдань на чек,
+        зміну та офлайн-сесію; key_verification — єдиний результат завдання
+        verify_key.
+      properties:
+        prro_id: { type: string, format: uuid, description: "Каса, на якій виконано завдання." }
+        shift_id:
+          type: string
+          format: uuid
+          description: Зміна, у межах якої видано документи завдання.
+        shift_number:
+          type: integer
+          format: int64
+          description: >-
+            Наскрізний номер зміни в межах каси. Присвоюється локально: ДПС
+            номера зміни не видає (у квитанції такого поля немає).
+        testing: { type: boolean, description: "Документи завдання тестові — каса в режимі test." }
+        receipt:
+          $ref: "#/components/schemas/DocResult"
+          description: Розрахунковий документ, який видало завдання receipt.
+        shift_open:
+          $ref: "#/components/schemas/DocResult"
+          description: Документ відкриття зміни.
+        zreport:
+          $ref: "#/components/schemas/DocResult"
+          description: Z-звіт, яким закрито зміну.
+        shift_close:
+          $ref: "#/components/schemas/DocResult"
+          description: Документ закриття зміни.
+        offline_end:
+          $ref: "#/components/schemas/DocResult"
+          description: Документ завершення офлайн-сесії.
+        offline_abandon: { $ref: "#/components/schemas/OfflineAbandonResult" }
+        key_verification:
+          $ref: "#/components/schemas/KeyVerificationResult"
+          description: Вердикт перевірки ключа КЕП — результат завдання verify_key.
+        key_password_check: { $ref: "#/components/schemas/KeyPasswordCheckResult" }
+        reconcile: { $ref: "#/components/schemas/ReconcileReport" }
+        dps_objects:
+          description: >-
+            Господарські одиниці власника ключа — результат завдання
+            dps_objects.
+          type: array
+          items: { $ref: "#/components/schemas/DPSTaxObject" }
+
+    OfflineAbandonResult:
+      type: object
+      description: Результат відмови від офлайн-сесії (abandon_offline_session).
+      required: [session_id, dps_session_id, held_documents, abandoned, closed]
+      properties:
+        session_id: { type: string, format: uuid, description: "Сесія, від якої відмовлено." }
+        dps_session_id: { type: integer, format: int64, description: "Номер сесії, виданий ДПС." }
+        held_documents:
+          type: integer
+          format: int64
+          description: Скільки документів сесії ДПС отримала; вони лишаються зареєстрованими.
+        abandoned:
+          type: array
+          items: { $ref: "#/components/schemas/AbandonedDocument" }
+          description: Документи сесії, яких ДПС не отримала.
+        closure_session_id:
+          type: string
+          format: uuid
+          description: >-
+            Сесія, якою відмовлену сесію завершують у ДПС. Відсутня, якщо ДПС
+            не отримала жодного документа сесії або вже завершила її сама.
+        closed:
+          type: boolean
+          description: >-
+            Сесію завершено в ДПС, каса знову онлайн. false — завершення ще
+            передається; документи каси до того чекають.
+
+    AbandonedDocument:
+      type: object
+      description: >-
+        Документ відмовленої офлайн-сесії — те, що отримав покупець. Його
+        фіскального номера в ДПС не існує.
+      required: [document_id, class, local_number, created_at]
+      properties:
+        document_id: { type: string, format: uuid, description: "Ідентифікатор документа в сервісі." }
+        task_id: { type: string, format: uuid, description: "Завдання, яке видало документ." }
+        class:
+          type: string
+          enum: [check, zreport, open_shift, close_shift, offline_begin, offline_end]
+          description: Вид документа.
+        kind:
+          type: string
+          enum: [sale, return, storno, service_in, service_out]
+          description: Що саме оформив чек; лише для class = check.
+        local_number:
+          type: integer
+          format: int64
+          description: Локальний номер, який мав документ.
+        fiscal_number: { type: string, description: "Офлайн-фіскальний номер, надрукований на документі." }
+        total: { type: string, description: "Сума документа в гривнях; лише для чеків." }
+        pay_form:
+          type: string
+          enum: [cash, cashless, mixed]
+          description: Форма оплати; лише для чеків.
+        created_at: { type: string, format: date-time, description: "Коли документ видано." }
+
+    ReconcileReport:
+      type: object
+      description: >-
+        Підсумок звіряння реєстратора з ДПС (sync_register): який стан
+        побачили на боці сервера і що виправили в себе.
+      required: [fiscal_number, dps_shift_opened, dps_next_local_number]
+      properties:
+        fiscal_number: { type: string, description: "Реєстратор, який звіряли." }
+        dps_shift_opened: { type: boolean, description: "Чи вважає ДПС зміну відкритою." }
+        dps_next_local_number:
+          type: integer
+          format: int64
+          description: Локальний номер, якого ДПС чекає від наступного документа.
+        dps_testing: { type: boolean, description: "Чи вважає ДПС реєстратор тестовим." }
+        counter_old:
+          type: integer
+          format: int64
+          description: Наш лічильник локальних номерів до звіряння.
+        counter_new: { type: integer, format: int64, description: "Наш лічильник після звіряння." }
+        shift_adopted:
+          type: boolean
+          description: Ми прийняли як свою зміну, відкриту на боці ДПС.
+        shift_abandoned:
+          type: boolean
+          description: Ми закрили в себе зміну, якої на боці ДПС немає.
+        offline_credentials_refreshed:
+          type: boolean
+          description: Офлайн-ключі реєстратора оновлено з даних ДПС.
+        cash:
+          type: object
+          description: >-
+            Скільки готівки зрушила поточна зміна за нашим підрахунком і за
+            підсумками зміни на боці ДПС. Присутнє лише тоді, коли на сервері
+            справді триває зміна.
+
+
+            Довідкове поле: за розбіжністю нічого не виправляється.
+          required: [ours, dps, match]
+          properties:
+            ours: { $ref: "#/components/schemas/CashAmount" }
+            dps: { $ref: "#/components/schemas/CashAmount" }
+            match: { type: boolean, description: "Чи збіглися обидва підрахунки." }
+        totals:
+          type: object
+          description: >-
+            Підсумки поточної зміни за нашим обліком і за даними ДПС. Присутнє
+            лише тоді, коли зміна триває і на сервері, і в нас.
+
+
+            Якщо підсумки розходяться, Z-звіт зміни подається з підсумками ДПС —
+            інших сервер не приймає.
+          required: [ours, match, z_report_source]
+          properties:
+            ours: { $ref: "#/components/schemas/ShiftTotalsBrief" }
+            dps:
+              $ref: "#/components/schemas/ShiftTotalsBrief"
+              description: Відсутнє, якщо ДПС не повернула підсумки.
+            match: { type: boolean, description: "Чи збіглися обидва підсумки." }
+            z_report_source:
+              type: string
+              enum: [local, dps]
+              description: З яких підсумків буде подано Z-звіт зміни.
+            forced:
+              type: boolean
+              description: Це звіряння перевело Z-звіт зміни на підсумки ДПС.
+            held:
+              type: string
+              enum: [dps_totals_unavailable, shift_closing, offline_backlog]
+              description: >-
+                Чому підсумки не звірено або розбіжність не виправлено:
+                dps_totals_unavailable — ДПС не повернула підсумки, звірити не
+                вдалося (match тоді false, dps відсутнє); shift_closing — Z-звіт
+                зміни вже подано; offline_backlog — офлайн-документи ще не
+                доставлено до ДПС.
+        attention_cleared:
+          type: boolean
+          description: >-
+            Знято позначку auto_close_failing — автоматичне закриття зміни
+            відновлено.
+        skipped:
+          type: string
+          enum: [offline_session]
+          description: >-
+            Чому нічого не чіпали (офлайн-сесію звіряння не торкається).
+
+    ShiftTotalsBrief:
+      type: object
+      description: Суми й кількості чеків зміни, за якими ДПС звіряє Z-звіт.
+      required: [sales, sales_count, returns, returns_count, service_input, service_output]
+      properties:
+        sales: { $ref: "#/components/schemas/CashAmount" }
+        sales_count: { type: integer, description: "Кількість чеків продажу." }
+        returns: { $ref: "#/components/schemas/CashAmount" }
+        returns_count: { type: integer, description: "Кількість чеків повернення." }
+        service_input: { $ref: "#/components/schemas/CashAmount" }
+        service_output: { $ref: "#/components/schemas/CashAmount" }
+
+    DPSTaxObject:
+      type: object
+      description: Одна господарська одиниця власника ключа (dps_objects).
+      required: [name, tin, org_name, registrars]
+      properties:
+        name: { type: string, description: "Назва господарської одиниці." }
+        address: { type: string, description: "Адреса господарської одиниці." }
+        tin: { type: string, description: "Податковий номер власника — ЄДРПОУ або РНОКПП." }
+        ipn: { type: string, description: "Індивідуальний податковий номер платника ПДВ." }
+        org_name: { type: string, description: "Назва суб'єкта господарювання." }
+        registrars:
+          description: ПРРО, зареєстровані за цією господарською одиницею.
+          type: array
+          items: { $ref: "#/components/schemas/DPSRegistrar" }
+
+    DPSRegistrar:
+      type: object
+      description: Один ПРРО, зареєстрований за господарською одиницею.
+      required: [fiscal_number, local_number]
+      properties:
+        fiscal_number: { type: string, description: "Фіскальний номер ПРРО, присвоєний ДПС." }
+        local_number: { type: string, description: "Локальний номер ПРРО у власника." }
+        name: { type: string, description: "Назва ПРРО з реєстрації." }
+        closed: { type: boolean, description: "ПРРО скасовано в ДПС." }
+
+    KeyPasswordCheckResult:
+      type: object
+      description: >-
+        Результат швидкої перевірки пароля контейнера: контейнер лише
+        розшифровується, без звернень до мережі.
+
+
+        Завдання успішне і при ok=false — воно дійшло до вердикту. При
+        внутрішньому збої вердикту немає і завдання повторюється.
+      required: [signing_key_id, ok]
+      properties:
+        signing_key_id:
+          type: string
+          format: uuid
+          description: Ключ, пароль якого перевіряли.
+        ok: { type: boolean, description: "Пароль підійшов — контейнер розшифровано." }
+        verify_code:
+          type: string
+          description: Присутній завжди при ok=false (напр. wrong_password).
+        verify_error: { type: string, description: "Дослівна помилка бібліотеки підпису." }
+
+    KeyVerificationResult:
+      description: >-
+        Вердикт повної перевірки ключа КЕП: чи можна ним підписувати документи
+        ПРРО і чий він.
+      type: object
+      required: [signing_key_id, status, prro_capable]
+      properties:
+        signing_key_id:
+          type: string
+          format: uuid
+          description: >-
+            Ключ, який перевіряли. При deleted=true запису вже немає.
+        status:
+          type: string
+          enum: [active, invalid]
+          description: >-
+            active — ключем можна користуватися; invalid — відхилено, причина
+            у verify_code.
+        verify_code:
+          type: string
+          enum: [wrong_password, cert_not_found, cert_expired, not_prro, verify_failed, ca_unreachable]
+          description: >-
+            Причина відхилення. not_prro можна перекрити через POST
+            /cabinet/signing-keys/{id}/activate.
+        verify_error: { type: string, description: "Дослівна помилка перевірки." }
+        key_type:
+          type: string
+          enum: [individual, legal]
+          description: >-
+            Тип власника, визначений із сертифіката.
+        prro_capable:
+          type: boolean
+          description: Сертифікат придатний для підпису документів ПРРО.
+        cert_subject: { type: string, description: "Поле subject сертифіката, як його видав АЦСК." }
+        org_name:
+          type: string
+          description: Назва організації (або ім'я особи) власника з сертифіката.
+        edrpou:
+          type: string
+          description: ЄДРПОУ юридичної особи з сертифіката, лише цифри.
+        drfo:
+          type: string
+          description: РНОКПП (ДРФО) фізичної особи з сертифіката, лише цифри.
+        deleted:
+          type: boolean
+          description: >-
+            Запис ключа видалено; так буває при будь-якому відхиленні, крім
+            not_prro.
+    DocResult:
+      description: >-
+        Документ, який видало завдання: номери в журналі та в ДПС і
+        посилання для покупця.
+      type: object
+      required: [document_id, local_number, fiscal_number, register_fiscal_number]
+      properties:
+        document_id:
+          type: string
+          format: uuid
+          description: Ідентифікатор документа в сервісі.
+        local_number:
+          type: integer
+          description: Наскрізний номер документа в межах каси (ORDERNUM).
+        fiscal_number: { type: string, description: Присвоєний фіскальним сервером ДПС. }
+        register_fiscal_number:
+          type: string
+          description: >-
+            Фіскальний номер ПРРО, на якому видано документ, — «ФН ПРРО» на
+            чеку (CASHREGISTERNUM). Це номер каси, а не документа: він
+            однаковий у будь-якому режимі, на відміну від fiscal_number.
+            Присутнє завжди.
+        offline:
+          type: boolean
+          description: >-
+            Документ підписано в межах офлайн-сесії: його фіскальний номер
+            обчислено локально (<sid>.<n>.<crc>), і на фіскальному сервері він
+            з'явиться лише після надсилання пакета сесії.
+        receipt_url:
+          type: string
+          format: uri
+          description: >-
+            Копія чека для покупця на короткому домені сервісу
+            (https://r.prro.cloud/<код>): її пересилають листом або
+            перетворюють на QR. Сторінка відкривається без авторизації — код
+            і є доступом.
+
+
+            Формат задає параметр запиту: ?format=html (типово), png (чек
+            картинкою завширшки 576 px — стрічка 80 мм для термопринтера, з
+            QR усередині) або qr (PNG з адресою цієї ж сторінки).
+
+
+            Є лише в розрахункових документів і працює одразу, в офлайн-сесії
+            теж. Це подання чека, а не доказ фіскалізації: доказ —
+            fiscal_number і tax_url.
+        tax_url:
+          type: string
+          format: uri
+          description: >-
+            Той самий документ у кабінеті платника податків — незалежне
+            підтвердження. Відсутнє, доки документ не потрапив на фіскальний
+            сервер: в офлайн-чека до надсилання пакета сесії є лише локально
+            обчислений номер.
+        original: { $ref: "#/components/schemas/ReturnOriginal" }
+
+    ReturnOriginal:
+      description: >-
+        Початковий чек повернення. Є лише в документа повернення.
+      type: object
+      required: [fiscal_number, verified]
+      properties:
+        fiscal_number: { type: string, description: "Фіскальний номер початкового чека." }
+        document_id:
+          type: string
+          format: uuid
+          description: Початковий чек у журналі сервісу; відсутній разом із verified.
+        verified:
+          type: boolean
+          description: >-
+            true — початковий чек видано в цьому сервісі, і повернення
+            звірено із залишком за ним. false — чека в сервісі немає
+            (виданий іншим ПРРО), повернення прийнято без звірки.
+
+    # The two shapes are split rather than merged into one struct with
+    # optional fields because a cross-field rule can say "items are required"
+    # but not "required for three kinds and forbidden for two", and the
+    # forbidding is the part that matters.
+    ReceiptInput:
+      description: >-
+        Дві форми документа, які розрізняє поле `type`: розрахунок за товари
+        несе позиції та оплати, рух готівки — лише суму. Поля чужої форми не
+        ігноруються, а відхиляються з 422.
+      oneOf:
+        - $ref: "#/components/schemas/SettlementReceiptInput"
+        - $ref: "#/components/schemas/ServiceReceiptInput"
+      discriminator:
+        propertyName: type
+        mapping:
+          sale: "#/components/schemas/SettlementReceiptInput"
+          return: "#/components/schemas/SettlementReceiptInput"
+          storno: "#/components/schemas/SettlementReceiptInput"
+          service_in: "#/components/schemas/ServiceReceiptInput"
+          service_out: "#/components/schemas/ServiceReceiptInput"
+
+    SettlementReceiptInput:
+      type: object
+      description: Розрахунок за товари — реалізація, повернення або сторно.
+      required: [type, items, payments]
+      properties:
+        cash_register_id:
+          type: string
+          format: uuid
+          description: >-
+            Реєстратор, на якому реєструють документ. Обов'язковий для POST
+            /v1/receipts; у маршрутах, де касу вже задано в URL, поле або
+            відсутнє, або збігається з нею, інакше 422.
+        type:
+          type: string
+          enum: [sale, return, storno]
+          description: >-
+            sale — реалізація; return — повернення; storno — сторно.
+        cashier:
+          type: string
+          description: >-
+            Ім'я касира, яке друкують у чеку (CASHIER); без нього рядка на чеку
+            не буде.
+        comment:
+          type: string
+          description: >-
+            Вільна примітка, яку друкують на самому документі
+            (CHECKHEAD/COMMENT) — наприклад номер замовлення.
+        sold_at:
+          type: string
+          format: date-time
+          description: >-
+            Момент фактичного продажу, якщо документ дійшов до сервісу
+            пізніше за касу. Це не фіскальний час документа: ДПС приймає
+            ORDERDATE/ORDERTIME лише в межах приблизно хвилини від власного
+            годинника, тож документ позначено моментом подання. Поле друкує
+            на документі рядок «Продаж від 03.09.2026 18:11» — перед
+            приміткою з `comment`, якщо вона є.
+
+
+            Час у майбутньому або старіший за 31 день — 422.
+        mode:
+          type: string
+          enum: [sync, async]
+          default: sync
+          description: >-
+            Режим доставки результату; параметр запиту ?mode= має перевагу над
+            цим полем.
+        # The cap is enforced by the worker, not at the request: the fiscal
+        # server accepts any return, and an over-return lowers the declared
+        # turnover. Summed before cash rounding so a rounded cash sale can be
+        # given back by card in full.
+        original:
+          type: object
+          description: >-
+            Зв'язок із початковим чеком; обов'язковий для повернення та
+            сторно.
+
+
+            Повернення звіряється з початковим чеком, якщо той видано в цьому
+            сервісі: це має бути чек продажу в тому самому режимі (тестовому
+            чи фіскальному), не сторнований, а сума всіх повернень за ним не
+            може перевищувати суму продажу до заокруглення. Інакше завдання
+            завершується помилкою з кодом return.* і документ не
+            реєструється. Чек, виданий поза сервісом, приймається без звірки
+            — див. result.receipt.original.verified.
+          required: [fiscal_number]
+          properties:
+            fiscal_number: { type: string, description: "Фіскальний номер початкового чека." }
+            register_fiscal_number:
+              type: string
+              description: >-
+                Фіскальний номер ПРРО, на якому видано початковий чек, якщо це
+                інший реєстратор. Без нього чек шукається на реєстраторі
+                повернення.
+            date: { type: string, format: date, description: "У форматі РРРР-ММ-ДД." }
+        items:
+          description: Позиції чека; щонайменше одна.
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ReceiptItem" }
+        payments:
+          description: Форми оплати чека; щонайменше одна.
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ReceiptPayment" }
+        rounding_step:
+          type: string
+          description: >-
+            Крок заокруглення готівки десятковим рядком ("0.10" за правилами
+            НБУ); без цього поля заокруглення не застосовується.
+    ServiceReceiptInput:
+      type: object
+      description: >-
+        Рух готівки повз продаж: `service_in` — службове внесення
+        (DOCSUBTYPE 2), `service_out` — службова видача, тобто інкасація
+        (DOCSUBTYPE 4).
+
+
+        Обробляється як звичайний розрахунковий документ: автоматичне
+        відкриття зміни в керованих режимах, офлайн-сесія, журнал і
+        тарифікація як за чек. У підсумках зміни сума йде окремо в
+        service_input/service_output і потрапляє до ZREPBODY Z-звіту;
+        cash_balance зсувається на всю суму.
+
+
+        Отримання підкріплення (DOCSUBTYPE 3) не підтримується.
+      required: [type, sum]
+      properties:
+        cash_register_id:
+          type: string
+          format: uuid
+          description: >-
+            Реєстратор, на якому реєструють документ. Обов'язковий для POST
+            /v1/receipts; у маршрутах, де касу вже задано в URL, поле або
+            відсутнє, або збігається з нею, інакше 422.
+        type:
+          type: string
+          enum: [service_in, service_out]
+          description: >-
+            service_in — службове внесення; service_out — службова видача
+            (інкасація).
+        cashier:
+          type: string
+          description: >-
+            Ім'я касира, яке друкують у документі (CASHIER); без нього рядка не
+            буде.
+        comment:
+          type: string
+          description: >-
+            Вільна примітка, яку друкують на документі (CHECKHEAD/COMMENT).
+            Для руху готівки це єдине місце, де сказано, за що гроші:
+            «Інкасація», «Розмінна монета».
+        sold_at:
+          type: string
+          format: date-time
+          description: >-
+            Момент фактичного продажу, якщо документ дійшов до сервісу
+            пізніше за касу. Це не фіскальний час документа: ДПС приймає
+            ORDERDATE/ORDERTIME лише в межах приблизно хвилини від власного
+            годинника, тож документ позначено моментом подання. Поле друкує
+            на документі рядок «Продаж від 03.09.2026 18:11» — перед
+            приміткою з `comment`, якщо вона є.
+
+
+            Час у майбутньому або старіший за 31 день — 422.
+        mode:
+          type: string
+          enum: [sync, async]
+          default: sync
+          description: >-
+            Режим доставки результату; параметр запиту ?mode= має перевагу над
+            цим полем.
+        sum:
+          type: string
+          description: >-
+            Сума руху — додатний десятковий рядок, до 2 знаків після коми;
+            позицій у такого документа немає.
+          examples: ["1500.00"]
+
+    ReceiptItem:
+      type: object
+      description: >-
+        Грошові величини — десяткові рядки ("259.90"); кількість допускає до
+        3 знаків після коми, ціни — до 2.
+      required: [name, quantity, price]
+      properties:
+        code: { type: string, description: Внутрішній код товару. }
+        barcode: { type: string, description: Штрихкод товару. }
+        uktzed: { type: string, description: "Код УКТЗЕД; взаємовиключний з dkpp." }
+        dkpp: { type: string, description: Взаємовиключний з uktzed. }
+        name: { type: string, description: "Назва позиції, як її друкують у чеку." }
+        unit_code: { type: integer, description: "Код одиниці виміру (UNITCD)." }
+        unit_name: { type: string, description: "Назва одиниці виміру: «шт», «кг»." }
+        quantity:
+          type: string
+          examples: ["1", "0.750"]
+          description: Кількість — десятковий рядок, до 3 знаків після коми.
+        price:
+          type: string
+          examples: ["259.90"]
+          description: Ціна за одиницю — десятковий рядок, до 2 знаків після коми.
+        tax_letters:
+          type: string
+          description: >-
+            Податкові літери з tax_rates реєстратора, напр. "А" або "АГ".
+            Порожнє значення застосовує default_tax_letter реєстратора (а якщо
+            типової літери немає — позиція лишається без податку); "-"
+            примусово робить позицію неоподаткованою.
+        discount:
+          description: Знижка на позицію.
+          type: object
+          required: [sum]
+          properties:
+            percent: { type: string, description: Позначає відсоткову знижку; суму все одно вказують у sum. }
+            sum:
+              type: string
+              description: >-
+                Сума знижки десятковим рядком — її вказують і для відсоткової
+                знижки.
+        excise_labels:
+          type: array
+          items: { type: string }
+          description: Коди марок акцизного податку.
+        comment: { type: string, description: Примітка до позиції. }
+
+    # Why one field and not the DPS pair PAYFORMCD/PAYFORMNM: carrying the
+    # code and the name separately lets a caller send code 0 (cash) named
+    # "КАРТКА" — the check prints a card payment while the drawer counter
+    # records cash. The enum makes the pair underivable-from-outside, and the
+    # single mapping table lives in server/internal/fiscal/payform.go.
+    PaymentType:
+      type: string
+      enum: [cash, card, certificate, bank_transfer, direct_debit]
+      description: >-
+        Форма оплати; фіскальний код і назву, які потраплять у чек, визначає
+        сервіс: `cash` — 0 ГОТІВКА, `card` — 301 КАРТКА, `certificate` — 305
+        СЕРТИФІКАТ, `bank_transfer` — 306 ПЕРЕКАЗ З ПОТОЧНОГО РАХУНКУ,
+        `direct_debit` — 100000 ПРЯМИЙ ДЕБЕТ. Залишок готівки реєстратора
+        рухає лише `cash`.
+    ReceiptPayment:
+      description: >-
+        Одна оплата чека: форма, сума і — для картки — реквізити еквайрингу.
+      type: object
+      required: [type, sum]
+      properties:
+        type: { $ref: "#/components/schemas/PaymentType" }
+        sum: { type: string, description: "Сума, віднесена на цю форму оплати." }
+        provided: { type: string, description: "Отримано готівкою; решта = provided − sum." }
+        means:
+          type: string
+          maxLength: 128
+          description: >-
+            Засіб оплати — чим саме внесено кошти; Положення № 13 (розд. II
+            п.2, рядок 19) вимагає його окремо від форми оплати.
+
+
+            Словник — той самий, що в прикладах ДПС: «Картка», «Переказ з
+            поточного рахунку», «Подарунковий сертифікат», «Попередня
+            оплата», «Прямий дебет», а також те, чого немає в `type`:
+            «ПЕРЕКАЗ З КАРТКИ», «ТАЛОН», «ЖЕТОН».
+
+
+            Заміняє лише назву, що друкується (PAYFORMNM); фіскальний код
+            форми (PAYFORMCD) визначає `type`. Для `cash` не приймається.
+        card:
+          type: object
+          description: >-
+            Реквізити еквайрингу (рядки 12–17). Усі три поля `acquirer_*`
+            описують еквайра торговця, а не самого торговця.
+          properties:
+            system_name: { type: string, description: "Назва платіжної системи (рядок 17)." }
+            acquirer_id: { type: string, maxLength: 128, description: "Ідентифікатор еквайра (рядок 12)." }
+            acquirer_tax_id: { type: string, maxLength: 128, description: "Податковий номер еквайра (рядок 12)." }
+            acquirer_name: { type: string, description: "Найменування еквайра (рядок 12)." }
+            transaction_date:
+              type: string
+              format: date-time
+              description: Дата й час транзакції на платіжному пристрої (POSTRANSDATE).
+            transaction_number:
+              type: string
+              description: Номер транзакції на платіжному пристрої (POSTRANSNUM).
+            device_id: { type: string, description: "Ідентифікатор платіжного пристрою (рядок 13)." }
+            epz_details: { type: string, description: Замаскований номер картки. }
+            auth_code: { type: string, description: "Код авторизації (рядок 17)." }
+            commission:
+              type: string
+              description: >-
+                Сума комісійної винагороди еквайра за цим платежем — рядок
+                14 форми ФКЧ-1, «у разі наявності».
+
+
+                У звичайному продажу лишається порожнім: заповнюють лише там,
+                де комісію платить платник — приймання коштів для подальшого
+                переказу та видача готівки держателям карток (розділи VI і
+                VII Положення № 13).
+
+
+                Нуль означає, що комісії немає, і рядок не друкується.
+    WebhookEvent:
+      type: string
+      enum:
+        - task.completed
+        - task.failed
+        - shift.opened
+        - shift.closed
+        - key.expiring
+        - register.offline
+        - register.online
+        - register.offline_limit
+        - register.offline_abandoned
+        - register.remediated
+        - register.needs_attention
+        - client.balance_low
+      description: >-
+        task.completed і task.failed — кожне завершене завдання;
+        shift.opened і shift.closed — життєвий цикл зміни; key.expiring — раз
+        на добу про сертифікат ключа, що спливає протягом 30 днів;
+        register.offline, register.online, register.offline_limit —
+        офлайн-сесії та законні межі їх тривалості (36 і 168 годин);
+        register.offline_abandoned — від офлайн-сесії відмовлено, у події
+        перелік документів, яких ДПС не отримала;
+        register.remediated — автоматичне усунення розбіжності з ДПС;
+        register.needs_attention — розбіжності не усуваються самі, потрібне
+        втручання людини; client.balance_low — баланс опустився нижче порога,
+        попередження перед тим, як чеки почнуть відхилятися з 402.
+
+    WebhookEndpoint:
+      description: >-
+        Точка доставки подій: куди слати й на які саме.
+      type: object
+      required: [id, url, events, active, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: "Ідентифікатор вебхука." }
+        url: { type: string, description: "Абсолютний http(s)-URL приймача." }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/WebhookEvent" }
+          description: Порожній список означає підписку на всі події.
+        active:
+          type: boolean
+          description: Доставка ввімкнена; false призупиняє її, не втрачаючи черги.
+        created_at: { type: string, format: date-time, description: "Коли вебхук створено." }
+        updated_at:
+          type: string
+          format: date-time
+          description: Коли його востаннє змінювали.
+
+    WebhookDelivery:
+      description: >-
+        Одна доставка події та її стан.
+      type: object
+      required: [id, event, status, attempts, created_at, data]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Ідентифікатор доставки — його ж передають у replay.
+        event:
+          type: string
+          description: >-
+            Тип події доставки. Крім значень WebhookEvent, доставка може нести
+            зарезервовані типи, на які не можна підписатися: webhook.ping
+            (тестова відправка) і system.dps_* (події доступності ДПС).
+        status:
+          type: string
+          enum: [pending, delivering, delivered, failed, dead]
+          description: >-
+            pending — у черзі; delivering — триває спроба; delivered —
+            доставлено; failed — спроба невдала, буде повтор; dead — спроби
+            вичерпано.
+        attempts: { type: integer, description: "Скільки спроб уже зроблено." }
+        cash_register_id:
+          type: string
+          format: uuid
+          description: Каса, якої стосується подія; у подій рівня клієнта відсутня.
+        data: { description: Корисне навантаження події (поле data конверта). }
+        last_error: { type: string, description: "Чим завершилася остання невдала спроба: код і початок відповіді приймача або причина збою з’єднання (зокрема TLS)." }
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: Коли буде наступна спроба; у завершених відсутнє.
+        created_at:
+          type: string
+          format: date-time
+          description: Коли подію поставлено в чергу.
+        delivered_at:
+          type: string
+          format: date-time
+          description: Коли приймач відповів успіхом.
+
+    Money:
+      type: string
+      pattern: '^-?\d+(\.\d{1,4})?$'
+      description: >-
+        Копійки десятковим рядком (numeric(14,4)); ніколи не число з рухомою
+        комою.
+    CashAmount:
+      type: string
+      pattern: '^-?\d+\.\d{2}$'
+      description: >-
+        Гривні з копійками десятковим рядком — у тій самій формі, що й суми
+        в чеках; Money натомість рахує копійки і належить тарифікації.
+      examples: ["1500.00", "-12.30"]
+
+    CashBalance:
+      type: object
+      description: >-
+        Готівка в касі реєстратора. Це лічильник, а не фіскальна величина:
+        він стартує з нуля при створенні реєстратора і враховує лише
+        документи, що пройшли через цей сервіс.
+
+
+        Рухають його готівкові рядки оплат — додають на реалізації,
+        віднімають на поверненні та сторно — і службові документи;
+        безготівкові форми не рухають нічого. Береться `sum` рядка оплати,
+        решта вже врахована. Лічильник належить реєстратору, а не зміні, і
+        Z-звіт його не скидає.
+
+
+        Від'ємне значення означає, що в касі було більше, ніж побачив сервіс.
+        Переставити лічильник: PUT /v1/cash-registers/{id}/cash-balance.
+      required: [amount]
+      properties:
+        amount: { $ref: "#/components/schemas/CashAmount" }
+        as_of:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Коли залишок рухався востаннє. Null — рухів ще не було, тож нуль
+            означає «немає даних», а не «каса порожня».
+    ShiftTotalsSide:
+      type: object
+      description: >-
+        Один бік підсумків зміни — реалізація або повернення: кількість
+        документів, сума і розклад за формами оплати.
+      required: [count, sum]
+      properties:
+        count:
+          type: integer
+          description: Кількість розрахункових документів цього боку.
+        sum: { $ref: "#/components/schemas/CashAmount" }
+        pay_forms:
+          type: array
+          description: >-
+            Накопичено за формами оплати. code/name — пара PAYFORMCD /
+            PAYFORMNM, яка піде в Z-звіт; масиву немає, поки бік порожній.
+          items:
+            type: object
+            required: [code, name, sum]
+            properties:
+              code: { type: integer, description: "PAYFORMCD — фіскальний код форми оплати." }
+              name: { type: string, description: "PAYFORMNM — назва форми оплати, як її друкують." }
+              sum: { $ref: "#/components/schemas/CashAmount" }
+
+    ShiftTotals:
+      type: object
+      description: >-
+        Поточні підсумки відкритої зміни — те саме накопичення, з якого буде
+        побудований Z-звіт.
+
+
+        Сторно віднімається з боку реалізації, а не додається до повернень.
+        Службові внесення й видачі не належать до жодного боку. Розкладу за
+        податковими літерами тут немає — він є лише в Z-звіті.
+      required: [realiz, return, service_in, service_out]
+      properties:
+        realiz: { $ref: "#/components/schemas/ShiftTotalsSide" }
+        return: { $ref: "#/components/schemas/ShiftTotalsSide" }
+        service_in: { $ref: "#/components/schemas/CashAmount" }
+        service_out: { $ref: "#/components/schemas/CashAmount" }
+
+    CashBalanceDeclaration:
+      type: object
+      description: >-
+        Лічильник до заяви, після неї і поправка між ними.
+      required: [amount, previous, adjustment]
+      properties:
+        amount: { $ref: "#/components/schemas/CashAmount" }
+        previous: { $ref: "#/components/schemas/CashAmount" }
+        adjustment: { $ref: "#/components/schemas/CashAmount" }
+
+    BillingUsage:
+      description: Баланс і підсумок тарифікації за період.
+      type: object
+      required: [balance, soft_limit, blocked, period, receipts, charged, tariff]
+      properties:
+        balance: { $ref: "#/components/schemas/Money" }
+        soft_limit:
+          allOf:
+            - $ref: "#/components/schemas/Money"
+          description: >-
+            Нижня межа балансу: поки balance < soft_limit, чеки заблоковані.
+        blocked:
+          type: boolean
+          description: Чеки зараз заблоковано — балансом або рішенням оператора.
+        period:
+          description: Період, за який пораховано підсумок.
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date, description: "Включно." }
+            to: { type: string, format: date, description: Не включно. }
+        receipts: { type: integer, format: int64, description: Кількість тарифікованих чеків за період. }
+        charged: { $ref: "#/components/schemas/Money" }
+        tariff:
+          description: Тариф, за яким рахували.
+          type: object
+          required: [plan_id, price_per_receipt]
+          properties:
+            plan_id: { type: string, format: uuid, description: "Ідентифікатор тарифного плану." }
+            price_per_receipt: { $ref: "#/components/schemas/Money" }
+
+    Invoice:
+      description: Рахунок за один розрахунковий період.
+      type: object
+      required: [id, period_start, period_end, amount, currency, status, created_at]
+      properties:
+        id: { type: string, format: uuid, description: "Ідентифікатор рахунка." }
+        period_start: { type: string, format: date, description: "Включно." }
+        period_end: { type: string, format: date, description: Включно. }
+        amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string, description: "Валюта рахунка за ISO 4217 — UAH." }
+        status:
+          type: string
+          enum: [draft, issued, paid, overdue]
+          description: >-
+            draft — чернетка; issued — виставлено; paid — оплачено; overdue —
+            прострочено.
+        created_at: { type: string, format: date-time, description: "Коли рахунок сформовано." }
+
+    DPSPulse:
+      type: object
+      description: >-
+        Режим роботи з ДПС і телеметрія, що його пояснює. Конвеєр реагує на
+        effective.
+      required: [effective, verdict, since, latency_ms, samples, failures, tunables]
+      properties:
+        effective:
+          type: string
+          enum: [online, offline]
+          description: Підсумковий операційний режим, якого дотримується конвеєр.
+        verdict:
+          type: string
+          enum: [online, degraded, offline]
+          description: Вердикт детектора — відрізняє «повільно» від «недоступно».
+        since:
+          type: string
+          format: date-time
+          description: Відколи діє поточний effective-режим.
+        latency_ms:
+          type: integer
+          format: int64
+          description: Затримка успішних викликів у вікні детектора, мс.
+        samples: { type: integer, description: "Скільки викликів у вікні." }
+        failures: { type: integer, description: "Скільки з них невдалих." }
+        last_ok_at:
+          type: string
+          format: date-time
+          description: Остання успішна відповідь ДПС.
+        last_probe_at:
+          type: string
+          format: date-time
+          description: Остання перевірка доступності ДПС.
+        tunables:
+          type: object
+          description: >-
+            Пороги, за якими судять числа вище: ширина вікна, поріг degraded
+            і крок перевірок.
+          required: [window_seconds, degraded_latency_ms, probe_interval_seconds]
+          properties:
+            window_seconds:
+              type: integer
+              format: int64
+              description: Ширина вікна детектора, с.
+            degraded_latency_ms:
+              type: integer
+              format: int64
+              description: Затримка, від якої відповідь вважають повільною, мс.
+            probe_interval_seconds:
+              type: integer
+              format: int64
+              description: Крок перевірок, с.

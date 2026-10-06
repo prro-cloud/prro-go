@@ -1,0 +1,38 @@
+version: "2"
+
+run:
+  go: "1.27"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - intrange
+    - misspell
+    - modernize
+    - noctx
+    - perfsprint
+    - revive
+    - unconvert
+    - usestdlibvars
+    - usetesting
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: receiver-naming
+        - name: error-strings
+        - name: error-naming
+        - name: indent-error-flow
+  exclusions:
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
