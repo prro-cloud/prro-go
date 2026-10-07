@@ -662,13 +662,21 @@ paths:
       operationId: createWebhook
       summary: Зареєструвати вебхук
       description: >-
-        Доставка — POST з тілом {delivery_id, event, attempt, occurred_at,
-        data} і заголовком X-Signature вигляду "sha256=<HMAC-SHA256 тіла у
-        hex>", порахованим на секреті цієї точки доставки.
+        Доставка — POST з тілом {delivery_id, event, attempt, sequence,
+        occurred_at, data} і заголовком X-Signature вигляду
+        "sha256=<HMAC-SHA256 тіла у hex>", порахованим на секреті цієї точки
+        доставки.
 
 
         Гарантія — «щонайменше один раз»: приймач має відкидати повтори за
-        delivery_id. Події одного реєстратора приходять по порядку.
+        delivery_id.
+
+
+        Події одного реєстратора надсилаються по одній і по порядку. Подія,
+        яку приймач не прийняв, не затримує наступні: після повтору чи replay
+        вона може прийти пізніше за них. Упорядковуйте події реєстратора за
+        sequence — номером події в межах реєстратора, що зростає (пропуски
+        можливі). Актуальний стан каси — GET /v1/cash-registers/{id}.
       tags: [webhooks]
       security:
         - bearerAuth: []
@@ -814,8 +822,8 @@ paths:
       responses:
         "200":
           description: >-
-            Повернуто в чергу. Пізніші події того самого реєстратора чекають
-            на неї: порядок зберігається.
+            Повернуто в чергу; спроба — одразу. Події, доставлені тим часом,
+            не повторюються: ця прийде після них.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WebhookDelivery" }
@@ -930,6 +938,8 @@ components:
           enum: [production, test]
           description: >-
             production — бойовий режим; test — документи позначені як тестові.
+            Документи зміни мають режим, у якому її відкрито; змінити режим
+            можна лише при закритій зміні.
         state:
           type: string
           enum: [closed, opened, offline]
@@ -1099,6 +1109,8 @@ components:
           enum: [production, test]
           description: >-
             production — бойовий режим; test — документи позначені як тестові.
+            Документи зміни мають режим, у якому її відкрито; змінити режим
+            можна лише при закритій зміні.
         state:
           type: string
           enum: [closed, opened, offline]
@@ -1928,6 +1940,12 @@ components:
           type: string
           format: uuid
           description: Каса, якої стосується подія; у подій рівня клієнта відсутня.
+        sequence:
+          type: integer
+          format: int64
+          description: >-
+            Номер події в межах каси (поле sequence конверта); за ним
+            упорядковують події. У подій рівня клієнта відсутній.
         data: { description: Корисне навантаження події (поле data конверта). }
         last_error: { type: string, description: "Чим завершилася остання невдала спроба: код і початок відповіді приймача або причина збою з’єднання (зокрема TLS)." }
         next_attempt_at:

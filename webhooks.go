@@ -104,6 +104,9 @@ type WebhookDelivery struct {
 	// CashRegisterID — каса, якої стосується подія; порожній у подій рівня
 	// клієнта.
 	CashRegisterID string `json:"cash_register_id,omitempty"`
+	// Sequence — номер події в межах каси (поле sequence конверта); за ним
+	// упорядковують події. 0 у подій рівня клієнта.
+	Sequence int64 `json:"sequence,omitempty"`
 	// Data — корисне навантаження події.
 	Data json.RawMessage `json:"data"`
 	// LastError — чим завершилася остання невдала спроба.
@@ -211,8 +214,8 @@ func (s *WebhooksService) Deliveries(ctx context.Context, id string, params *Lis
 }
 
 // Replay повертає доставку deliveryID вебхука id у чергу з новим запасом
-// спроб. Пізніші події тієї самої каси чекають на неї — порядок
-// зберігається. Якщо саме зараз триває спроба доставки — 409
+// спроб; спроба — одразу. Події, доставлені тим часом, не повторюються:
+// ця прийде після них, тож упорядковуйте події за Sequence. Якщо саме зараз триває спроба доставки — 409
 // (Code == "delivery_in_flight").
 func (s *WebhooksService) Replay(ctx context.Context, id, deliveryID string) (*WebhookDelivery, error) {
 	path, err := pathf("/v1/webhooks/%s/deliveries/%s/replay", id, deliveryID)

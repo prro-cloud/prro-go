@@ -18,7 +18,7 @@ const secret = "whsec-test"
 // envelope будує тіло доставки події event із даними data.
 func envelope(event prro.WebhookEvent, data string) []byte {
 	return fmt.Appendf(nil, `{"delivery_id":"0197a2c4-0000-7000-8000-000000000001","event":%q,`+
-		`"attempt":2,"occurred_at":"2026-07-14T10:15:04Z","data":%s}`, event, data)
+		`"attempt":2,"sequence":42,"occurred_at":"2026-07-14T10:15:04Z","data":%s}`, event, data)
 }
 
 func TestSignVerify(t *testing.T) {
@@ -59,7 +59,7 @@ func TestParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.DeliveryID != "0197a2c4-0000-7000-8000-000000000001" || e.Type != prro.EventShiftOpened || e.Attempt != 2 ||
+	if e.DeliveryID != "0197a2c4-0000-7000-8000-000000000001" || e.Type != prro.EventShiftOpened || e.Attempt != 2 || e.Sequence != 42 ||
 		!e.OccurredAt.Equal(time.Date(2026, 7, 14, 10, 15, 4, 0, time.UTC)) {
 		t.Errorf("event = %+v", e)
 	}
