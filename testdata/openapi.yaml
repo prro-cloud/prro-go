@@ -60,7 +60,7 @@ info:
 
     Автентифікація — Bearer JWT, виданий у кабінеті. Сам кабінет має
     окремий вхід і тут не описаний.
-  version: 0.5.0
+  version: 0.6.0
 
 paths:
   /v1/version:
@@ -651,12 +651,18 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [webhooks]
+                required: [webhooks, limit, used]
                 properties:
                   webhooks:
                     description: Точки доставки клієнта; секрети не повертаються.
                     type: array
                     items: { $ref: "#/components/schemas/WebhookEndpoint" }
+                  limit:
+                    type: integer
+                    description: Скільки вебхуків дозволено — кількість кас клієнта плюс один.
+                  used:
+                    type: integer
+                    description: Скільки вебхуків зареєстровано, включно з призупиненими.
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       operationId: createWebhook
@@ -709,6 +715,14 @@ paths:
                     properties:
                       secret: { type: string, description: Отримати повторно неможливо. }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: >-
+            Ліміт вебхуків вичерпано (код webhook_limit_reached): дозволено не
+            більше, ніж кас у клієнта, плюс один; призупинені теж рахуються. У
+            details — limit і used.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/Error" }
 
   /v1/webhooks/{id}:
@@ -761,6 +775,9 @@ paths:
     get:
       operationId: listWebhookDeliveries
       summary: Історія доставок вебхука
+      description: >-
+        Доставлені зберігаються 30 днів, невдалі (dead) — 14 днів від
+        останньої спроби; старіші зникають з історії.
       tags: [webhooks]
       security:
         - bearerAuth: []
@@ -804,7 +821,8 @@ paths:
       summary: Повторити доставку
       description: >-
         Повертає доставку — зазвичай невдалу — в чергу з новим запасом
-        спроб.
+        спроб. Доступно, поки доставка є в історії: невдалу — 14 днів від
+        останньої спроби.
       tags: [webhooks]
       security:
         - bearerAuth: []
@@ -1878,6 +1896,7 @@ components:
         - register.remediated
         - register.needs_attention
         - client.balance_low
+        - receipt.registered
       description: >-
         task.completed і task.failed — кожне завершене завдання;
         shift.opened і shift.closed — життєвий цикл зміни; key.expiring — раз
@@ -1889,7 +1908,105 @@ components:
         register.remediated — автоматичне усунення розбіжності з ДПС;
         register.needs_attention — розбіжності не усуваються самі, потрібне
         втручання людини; client.balance_low — баланс опустився нижче порога,
-        попередження перед тим, як чеки почнуть відхилятися з 402.
+        попередження перед тим, як чеки почнуть відхилятися з 402;
+        receipt.registered — зареєстровано чек (продаж, повернення, сторно,
+        службове внесення чи видача) з повним вмістом; схема даних — ReceiptRegisteredData.
+
+    ReceiptRegisteredData:
+      description: >-
+        Дані події receipt.registered: документ у тому вигляді, в якому його
+        отримала ДПС. Суми — десяткові рядки в гривнях, як у запиті чека.
+      type: object
+      required: [cash_register_id, register_fiscal_number, document_id, task_id, type,
+        source, local_number, fiscal_number, offline, testing, shift_id, issued_at, total]
+      properties:
+        cash_register_id: { type: string, format: uuid, description: "Каса." }
+        register_fiscal_number: { type: string, description: "Фіскальний номер ПРРО." }
+        document_id: { type: string, format: uuid, description: "Документ у журналі." }
+        task_id: { type: string, format: uuid, description: "Завдання, яке його зареєструвало." }
+        type:
+          type: string
+          enum: [sale, return, storno, service_in, service_out]
+          description: Вид документа.
+        source:
+          type: string
+          enum: [api, cabinet]
+          description: Звідки подано чек — через API чи з панелі.
+        user_id:
+          type: string
+          format: uuid
+          description: >-
+            Обліковий запис панелі, з якого подано чек; лише для source
+            cabinet. Власник бачить його в переліку команди.
+        cashier: { type: string, description: "Ім’я касира, надруковане на чеку." }
+        local_number: { type: integer, format: int64, description: "Локальний номер документа." }
+        fiscal_number:
+          type: string
+          description: Фіскальний номер документа; в офлайні — обчислений локально.
+        offline: { type: boolean, description: "Чек подано в офлайн-сесії." }
+        testing: { type: boolean, description: "Тестовий документ." }
+        shift_id: { type: string, format: uuid, description: "Зміна." }
+        shift_number: { type: integer, format: int64, description: "Номер зміни на касі." }
+        issued_at:
+          type: string
+          format: date-time
+          description: Дата й час документа, як їх надруковано.
+        total: { type: string, description: "Сума до сплати; для службових документів — сума руху готівки." }
+        rounding: { type: string, description: "Заокруглення готівки, якщо було." }
+        items:
+          type: array
+          description: Рядки чека.
+          items:
+            type: object
+            required: [name, quantity, price]
+            properties:
+              code: { type: string }
+              barcode: { type: string }
+              uktzed: { type: string }
+              dkpp: { type: string }
+              name: { type: string }
+              unit_name: { type: string }
+              quantity: { type: string }
+              price: { type: string }
+              cost: { type: string, description: "Вартість рядка до знижки." }
+              tax_letters: { type: string }
+              discount: { type: string, description: "Сума знижки." }
+        payments:
+          type: array
+          description: Форми оплати.
+          items:
+            type: object
+            required: [name, sum]
+            properties:
+              type: { type: string, description: "Форма оплати, як у запиті чека." }
+              name: { type: string, description: "Назва, надрукована на чеку." }
+              sum: { type: string }
+        taxes:
+          type: array
+          description: Податки чека.
+          items:
+            type: object
+            required: [name, rate, turnover, sum]
+            properties:
+              letter: { type: string }
+              name: { type: string }
+              rate: { type: string, description: "Ставка, відсотки." }
+              turnover: { type: string, description: "Оборот за ставкою." }
+              sum: { type: string, description: "Сума податку." }
+              excluded: { type: boolean, description: "Податок нараховано понад ціну." }
+        comment: { type: string, description: "Коментар, надрукований на чеку." }
+        original:
+          type: object
+          description: Чек, який повертає повернення чи скасовує сторно.
+          required: [fiscal_number, verified]
+          properties:
+            fiscal_number: { type: string }
+            document_id: { type: string, format: uuid, description: "Оригінал у журналі, якщо він там є." }
+            verified: { type: boolean, description: "Лише для повернення: оригінал знайдено в журналі й перевірено залишок." }
+        receipt_url: { type: string, description: "Копія чека для покупця." }
+        tax_url:
+          type: string
+          description: Чек у кабінеті платника ДПС; відсутнє, доки офлайн-чек не прийнято ДПС.
 
     WebhookEndpoint:
       description: >-

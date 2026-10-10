@@ -8,11 +8,11 @@ import (
 )
 
 // Version — версія бібліотеки; потрапляє в заголовок User-Agent.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // APIVersion — версія контракту API (info.version в openapi.yaml), з якою
 // зібрано бібліотеку.
-const APIVersion = "0.5.0"
+const APIVersion = "0.6.0"
 
 // DefaultBaseURL — базова адреса машинного API PRRO.cloud.
 const DefaultBaseURL = "https://api.prro.cloud"

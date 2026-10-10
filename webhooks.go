@@ -43,6 +43,10 @@ const (
 	// EventClientBalanceLow — баланс опустився нижче порога; попередження
 	// перед тим, як чеки почнуть відхилятися з 402.
 	EventClientBalanceLow WebhookEvent = "client.balance_low"
+	// EventReceiptRegistered — зареєстровано чек (продаж, повернення, сторно,
+	// службове внесення чи видача) з повним вмістом: позиції, оплати,
+	// податки — у тому вигляді, в якому його отримала ДПС.
+	EventReceiptRegistered WebhookEvent = "receipt.registered"
 )
 
 // Зарезервовані події: на них не підписуються, але доставка може їх нести.
@@ -119,15 +123,20 @@ type WebhookDelivery struct {
 // WebhooksService — реєстрація вебхуків і історія доставок.
 type WebhooksService service
 
-// List повертає вебхуки клієнта; секрети не повертаються.
-func (s *WebhooksService) List(ctx context.Context) ([]WebhookEndpoint, error) {
-	out, err := call[struct {
-		Webhooks []WebhookEndpoint `json:"webhooks"`
-	}](ctx, s.client, request{method: http.MethodGet, path: "/v1/webhooks"})
-	if err != nil {
-		return nil, err
-	}
-	return out.Webhooks, nil
+// WebhookList — вебхуки клієнта і ліміт їхньої кількості.
+type WebhookList struct {
+	// Webhooks — точки доставки; секрети не повертаються.
+	Webhooks []WebhookEndpoint `json:"webhooks"`
+	// Limit — скільки вебхуків дозволено: кількість кас клієнта плюс один.
+	Limit int `json:"limit"`
+	// Used — скільки вебхуків зареєстровано, включно з призупиненими.
+	Used int `json:"used"`
+}
+
+// List повертає вебхуки клієнта разом із лімітом: поки Used < Limit, можна
+// створити ще один.
+func (s *WebhooksService) List(ctx context.Context) (*WebhookList, error) {
+	return call[WebhookList](ctx, s.client, request{method: http.MethodGet, path: "/v1/webhooks"})
 }
 
 // CreateWebhookParams — параметри нового вебхука.
@@ -144,6 +153,10 @@ type CreateWebhookParams struct {
 // attempt, occurred_at, data} і підписом у заголовку X-Signature; гарантія —
 // «щонайменше один раз», тож приймач відкидає повтори за delivery_id.
 // Секрет у відповіді повертається рівно один раз.
+//
+// Вебхуків може бути не більше, ніж кас у клієнта, плюс один; призупинені
+// теж рахуються. Понад ліміт — [ErrWebhookLimitReached], а поточні limit і
+// used — у [Error.Details].
 func (s *WebhooksService) Create(ctx context.Context, params CreateWebhookParams) (*CreatedWebhook, error) {
 	return call[CreatedWebhook](ctx, s.client, request{method: http.MethodPost, path: "/v1/webhooks", body: params})
 }
@@ -189,7 +202,8 @@ type ListDeliveriesParams struct {
 }
 
 // Deliveries повертає історію доставок вебхука id, від найновішої; params
-// може бути nil.
+// може бути nil. Доставлені зберігаються 30 днів, невдалі (dead) — 14 днів
+// від останньої спроби; старіші зникають з історії.
 func (s *WebhooksService) Deliveries(ctx context.Context, id string, params *ListDeliveriesParams) ([]WebhookDelivery, error) {
 	path, err := pathf("/v1/webhooks/%s/deliveries", id)
 	if err != nil {
@@ -214,8 +228,10 @@ func (s *WebhooksService) Deliveries(ctx context.Context, id string, params *Lis
 }
 
 // Replay повертає доставку deliveryID вебхука id у чергу з новим запасом
-// спроб; спроба — одразу. Події, доставлені тим часом, не повторюються:
-// ця прийде після них, тож упорядковуйте події за Sequence. Якщо саме зараз триває спроба доставки — 409
+// спроб; спроба — одразу. Доступно, поки доставка є в історії: невдала —
+// 14 днів від останньої спроби, далі — [ErrNotFound]. Події, доставлені тим
+// часом, не повторюються: ця прийде після них, тож упорядковуйте події за
+// Sequence. Якщо саме зараз триває спроба доставки — 409
 // (Code == "delivery_in_flight").
 func (s *WebhooksService) Replay(ctx context.Context, id, deliveryID string) (*WebhookDelivery, error) {
 	path, err := pathf("/v1/webhooks/%s/deliveries/%s/replay", id, deliveryID)

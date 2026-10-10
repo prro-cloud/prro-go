@@ -143,6 +143,104 @@ type BalanceData struct {
 	ThresholdReceipts int `json:"threshold_receipts"`
 }
 
+// ReceiptSource — звідки подано чек.
+type ReceiptSource string
+
+// Джерела чека.
+const (
+	SourceAPI     ReceiptSource = "api"     // через машинне API
+	SourceCabinet ReceiptSource = "cabinet" // з панелі кабінету
+)
+
+// ReceiptData — дані події receipt.registered: документ у тому вигляді, в
+// якому його отримала ДПС. Подія приходить на кожен зареєстрований чек —
+// і поданий через API, і поданий з панелі.
+type ReceiptData struct {
+	CashRegisterID string `json:"cash_register_id"`
+	// RegisterFiscalNumber — фіскальний номер ПРРО.
+	RegisterFiscalNumber string `json:"register_fiscal_number"`
+	// DocumentID — документ у журналі сервісу.
+	DocumentID string `json:"document_id"`
+	// TaskID — завдання, яке зареєструвало документ.
+	TaskID string           `json:"task_id"`
+	Type   prro.ReceiptType `json:"type"`
+	Source ReceiptSource    `json:"source"`
+	// UserID — обліковий запис панелі, з якого подано чек; лише для
+	// [SourceCabinet].
+	UserID string `json:"user_id,omitempty"`
+	// Cashier — ім'я касира, надруковане на чеку.
+	Cashier     string `json:"cashier,omitempty"`
+	LocalNumber int64  `json:"local_number"`
+	// FiscalNumber — фіскальний номер документа; в офлайні — обчислений
+	// локально.
+	FiscalNumber string `json:"fiscal_number"`
+	// Offline — чек подано в офлайн-сесії.
+	Offline bool `json:"offline"`
+	// Testing — тестовий документ: каса в режимі test.
+	Testing     bool   `json:"testing"`
+	ShiftID     string `json:"shift_id"`
+	ShiftNumber int64  `json:"shift_number,omitempty"`
+	// IssuedAt — дата й час документа, як їх надруковано.
+	IssuedAt time.Time `json:"issued_at"`
+	// Total — сума до сплати; для службових документів — сума руху готівки.
+	Total prro.Amount `json:"total"`
+	// Rounding — заокруглення готівки, якщо було.
+	Rounding prro.Amount      `json:"rounding,omitempty"`
+	Items    []ReceiptLine    `json:"items,omitempty"`
+	Payments []ReceiptPayment `json:"payments,omitempty"`
+	Taxes    []ReceiptTax     `json:"taxes,omitempty"`
+	// Comment — коментар, надрукований на чеку.
+	Comment string `json:"comment,omitempty"`
+	// Original — чек, який повертає повернення чи скасовує сторно.
+	Original *prro.ReturnOriginal `json:"original,omitempty"`
+	// ReceiptURL — копія чека для покупця.
+	ReceiptURL string `json:"receipt_url,omitempty"`
+	// TaxURL — чек у кабінеті платника ДПС; відсутнє, доки офлайн-чек не
+	// прийнято ДПС.
+	TaxURL string `json:"tax_url,omitempty"`
+}
+
+// ReceiptLine — рядок зареєстрованого чека.
+type ReceiptLine struct {
+	Code     string `json:"code,omitempty"`
+	Barcode  string `json:"barcode,omitempty"`
+	UKTZED   string `json:"uktzed,omitempty"`
+	DKPP     string `json:"dkpp,omitempty"`
+	Name     string `json:"name"`
+	UnitName string `json:"unit_name,omitempty"`
+	// Quantity — кількість десятковим рядком: "1", "0.750".
+	Quantity string      `json:"quantity"`
+	Price    prro.Amount `json:"price"`
+	// Cost — вартість рядка до знижки.
+	Cost       prro.Amount `json:"cost,omitempty"`
+	TaxLetters string      `json:"tax_letters,omitempty"`
+	// Discount — сума знижки.
+	Discount prro.Amount `json:"discount,omitempty"`
+}
+
+// ReceiptPayment — форма оплати зареєстрованого чека.
+type ReceiptPayment struct {
+	// Type — форма оплати, як у запиті чека.
+	Type prro.PaymentType `json:"type,omitempty"`
+	// Name — назва, надрукована на чеку.
+	Name string      `json:"name"`
+	Sum  prro.Amount `json:"sum"`
+}
+
+// ReceiptTax — податок зареєстрованого чека.
+type ReceiptTax struct {
+	Letter string `json:"letter,omitempty"`
+	Name   string `json:"name"`
+	// Rate — ставка у відсотках: "20.00".
+	Rate string `json:"rate"`
+	// Turnover — оборот за ставкою.
+	Turnover prro.Amount `json:"turnover"`
+	// Sum — сума податку.
+	Sum prro.Amount `json:"sum"`
+	// Excluded — податок нараховано понад ціну.
+	Excluded bool `json:"excluded,omitempty"`
+}
+
 // DPSData — дані подій system.dps_*: режим роботи з ДПС після переходу і
 // його причина.
 type DPSData struct {
@@ -199,6 +297,11 @@ func (e *Event) Attention() (*AttentionData, error) {
 // Balance повертає дані події client.balance_low.
 func (e *Event) Balance() (*BalanceData, error) {
 	return decode[BalanceData](e, prro.EventClientBalanceLow)
+}
+
+// Receipt повертає дані події receipt.registered.
+func (e *Event) Receipt() (*ReceiptData, error) {
+	return decode[ReceiptData](e, prro.EventReceiptRegistered)
 }
 
 // DPS повертає дані подій system.dps_*.

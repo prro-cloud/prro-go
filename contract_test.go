@@ -377,7 +377,8 @@ func TestContractEnums(t *testing.T) {
 			want: str(string(EventTaskCompleted), string(EventTaskFailed), string(EventShiftOpened),
 				string(EventShiftClosed), string(EventKeyExpiring), string(EventRegisterOffline),
 				string(EventRegisterOnline), string(EventRegisterOfflineLimit), string(EventRegisterOfflineAbandoned),
-				string(EventRegisterRemediated), string(EventRegisterNeedsAttention), string(EventClientBalanceLow)),
+				string(EventRegisterRemediated), string(EventRegisterNeedsAttention), string(EventClientBalanceLow),
+				string(EventReceiptRegistered)),
 		},
 		{
 			path: []string{"WebhookDelivery", "properties", "status"},
@@ -394,18 +395,23 @@ func TestContractEnums(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		name := strings.Join(tt.path, ".")
-		node := schemas.at(tt.path...)
-		if node == nil {
-			t.Errorf("%s: not in contract", name)
-			continue
-		}
-		got := slices.DeleteFunc(node.at("enum").list(), func(v string) bool { return slices.Contains(tt.skip, v) })
-		slices.Sort(got)
-		slices.Sort(tt.want)
-		if !slices.Equal(got, tt.want) {
-			t.Errorf("%s: contract enum %v, Go constants %v", name, got, tt.want)
-		}
+		checkEnum(t, schemas.at(tt.path...), strings.Join(tt.path, "."), tt.want, tt.skip)
+	}
+}
+
+// checkEnum звіряє значення перелічення node з константами want; skip —
+// значення контракту, які бібліотека свідомо не відображає.
+func checkEnum(t *testing.T, node *ynode, name string, want, skip []string) {
+	t.Helper()
+	if node == nil {
+		t.Errorf("%s: not in contract", name)
+		return
+	}
+	got := slices.DeleteFunc(node.at("enum").list(), func(v string) bool { return slices.Contains(skip, v) })
+	slices.Sort(got)
+	want = slices.Sorted(slices.Values(want))
+	if !slices.Equal(got, want) {
+		t.Errorf("%s: contract enum %v, Go constants %v", name, got, want)
 	}
 }
 
@@ -468,6 +474,7 @@ func TestContractSchemas(t *testing.T) {
 		{schema("ReceiptPayment", "properties", "card"), CardDetails{}, nil},
 		{schema("WebhookEndpoint"), WebhookEndpoint{}, nil},
 		{schema("WebhookDelivery"), WebhookDelivery{}, nil},
+		{[]string{"paths", "/v1/webhooks", "get", "responses", "200", "content", "application/json", "schema"}, WebhookList{}, nil},
 		{schema("BillingUsage"), BillingUsage{}, nil},
 		{schema("BillingUsage", "properties", "period"), BillingPeriod{}, nil},
 		{schema("BillingUsage", "properties", "tariff"), Tariff{}, nil},
@@ -481,25 +488,31 @@ func TestContractSchemas(t *testing.T) {
 		{body("/v1/webhooks/{id}", "patch"), UpdateWebhookParams{}, nil},
 	}
 	for _, tt := range tests {
-		typ := reflect.TypeOf(tt.typ)
-		node := spec.at(tt.path...)
-		if node == nil || node.at("properties") == nil {
-			t.Errorf("%s: no such schema with properties in contract", typ.Name())
-			continue
+		checkSchema(t, spec.at(tt.path...), tt.typ, tt.skip)
+	}
+}
+
+// checkSchema звіряє поля схеми node з json-полями структури typ в обидва
+// боки; skip — поля контракту, які бібліотека свідомо не відображає.
+func checkSchema(t *testing.T, node *ynode, typ any, skip []string) {
+	t.Helper()
+	rt := reflect.TypeOf(typ)
+	if node == nil || node.at("properties") == nil {
+		t.Errorf("%s: no such schema with properties in contract", rt.Name())
+		return
+	}
+	props := slices.DeleteFunc(slices.Clone(node.at("properties").keys), func(p string) bool {
+		return slices.Contains(skip, p)
+	})
+	fields := jsonFields(rt)
+	for _, p := range props {
+		if !slices.Contains(fields, p) {
+			t.Errorf("%s: contract field %q has no struct field", rt.Name(), p)
 		}
-		props := slices.DeleteFunc(slices.Clone(node.at("properties").keys), func(p string) bool {
-			return slices.Contains(tt.skip, p)
-		})
-		fields := jsonFields(typ)
-		for _, p := range props {
-			if !slices.Contains(fields, p) {
-				t.Errorf("%s: contract field %q has no struct field", typ.Name(), p)
-			}
-		}
-		for _, f := range fields {
-			if !slices.Contains(props, f) {
-				t.Errorf("%s: struct field %q is not in the contract", typ.Name(), f)
-			}
+	}
+	for _, f := range fields {
+		if !slices.Contains(props, f) {
+			t.Errorf("%s: struct field %q is not in the contract", rt.Name(), f)
 		}
 	}
 }

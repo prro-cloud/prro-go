@@ -87,7 +87,11 @@ func run() int {
 	check("Invoices.List", err, fmt.Sprintf("%d рахунків", len(invoices)))
 
 	hooks, err := c.Webhooks.List(ctx)
-	check("Webhooks.List", err, fmt.Sprintf("%d вебхуків", len(hooks)))
+	if err == nil {
+		check("Webhooks.List", nil, fmt.Sprintf("%d із %d вебхуків", hooks.Used, hooks.Limit))
+	} else {
+		check("Webhooks.List", err, "")
+	}
 
 	if failed > 0 {
 		fmt.Printf("\nпомилок: %d\n", failed)
