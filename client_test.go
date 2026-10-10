@@ -237,6 +237,7 @@ func TestErrors(t *testing.T) {
 		{"not found", 404, `{"code":"not_found","message":"cash register not found"}`, ErrNotFound},
 		{"payment", 402, `{"code":"payment_required","message":"balance"}`, ErrPaymentRequired},
 		{"key reused", 409, `{"code":"idempotency_key_reused","message":"other op"}`, ErrIdempotencyKeyReused},
+		{"webhook limit", 409, `{"code":"webhook_limit_reached","message":"limit"}`, ErrWebhookLimitReached},
 		{"validation", 422, `{"code":"validation_failed","message":"items","details":[{"field":"items"}]}`, ErrValidation},
 		{"status fallback", 404, `not found`, ErrNotFound},
 	}

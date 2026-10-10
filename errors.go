@@ -26,6 +26,9 @@ var (
 	// ErrIdempotencyKeyReused — 409: цей Idempotency-Key уже використано
 	// для іншої операції.
 	ErrIdempotencyKeyReused = errors.New("prro: idempotency key reused")
+	// ErrWebhookLimitReached — 409: ліміт вебхуків вичерпано (не більше, ніж
+	// кас у клієнта, плюс один); limit і used — у [Error.Details].
+	ErrWebhookLimitReached = errors.New("prro: webhook limit reached")
 	// ErrValidation — 422: запит не пройшов валідацію; подробиці — у
 	// [Error.Details].
 	ErrValidation = errors.New("prro: validation failed")
@@ -41,6 +44,7 @@ const (
 	codeNotFound             = "not_found"
 	codePaymentRequired      = "payment_required"
 	codeIdempotencyKeyReused = "idempotency_key_reused"
+	codeWebhookLimitReached  = "webhook_limit_reached"
 	codeValidationFailed     = "validation_failed"
 	codeTaskFailed           = "task_failed"
 )
@@ -102,6 +106,8 @@ func (e *Error) Unwrap() error {
 		return ErrPaymentRequired
 	case codeIdempotencyKeyReused:
 		return ErrIdempotencyKeyReused
+	case codeWebhookLimitReached:
+		return ErrWebhookLimitReached
 	case codeValidationFailed:
 		return ErrValidation
 	case codeTaskFailed:

@@ -183,6 +183,25 @@ func TestEventData(t *testing.T) {
 			},
 		},
 		{
+			prro.EventReceiptRegistered, `{"cash_register_id":"r1","register_fiscal_number":"4001063533",
+			"document_id":"d2","task_id":"t2","type":"return","source":"cabinet","user_id":"u1","cashier":"Олена",
+			"local_number":43,"fiscal_number":"7466800083","offline":false,"testing":false,"shift_id":"s1",
+			"shift_number":147,"issued_at":"2026-07-14T10:15:04Z","total":"65.00",
+			"items":[{"name":"Кава американо","quantity":"1","price":"65.00","cost":"65.00","tax_letters":"А"}],
+			"payments":[{"type":"card","name":"КАРТКА","sum":"65.00"}],
+			"taxes":[{"letter":"А","name":"ПДВ","rate":"20.00","turnover":"65.00","sum":"10.83"}],
+			"original":{"fiscal_number":"7466800082","document_id":"d1","verified":true},
+			"receipt_url":"https://r.prro.cloud/aB3xK9pQvT2mNr7d"}`,
+			func(t *testing.T, e *Event) {
+				d, err := e.Receipt()
+				if err != nil || d.Type != prro.ReceiptReturn || d.Source != SourceCabinet || d.ShiftNumber != 147 ||
+					d.Items[0].Price != "65.00" || d.Payments[0].Type != prro.PaymentCard || d.Taxes[0].Sum != "10.83" ||
+					!d.Original.Verified || d.IssuedAt.Minute() != 15 {
+					t.Errorf("receipt = %+v, err = %v", d, err)
+				}
+			},
+		},
+		{
 			prro.EventPing, `{"message":"test","webhook_id":"w1","sent_at":"2026-07-14T10:15:04Z"}`,
 			func(t *testing.T, e *Event) {
 				d, err := e.Ping()

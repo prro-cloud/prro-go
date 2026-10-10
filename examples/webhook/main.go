@@ -59,6 +59,13 @@ func handle(ctx context.Context, e *webhook.Event) error {
 			return err
 		}
 		log.Printf("баланс добігає кінця: лишилося %d чеків", d.ReceiptsLeft)
+
+	case prro.EventReceiptRegistered:
+		d, err := e.Receipt()
+		if err != nil {
+			return err
+		}
+		log.Printf("чек %s (%s, %s) на %s грн: %s", d.FiscalNumber, d.Type, d.Source, d.Total, d.ReceiptURL)
 	}
 	return nil
 }

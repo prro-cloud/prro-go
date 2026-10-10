@@ -449,9 +449,10 @@ func TestWebhooks(t *testing.T) {
 	endpoint := `{"id":"w1","url":"https://example.com/prro-hook","events":["task.completed"],"active":true,
 		"created_at":"2026-07-14T10:00:00Z","updated_at":"2026-07-14T10:00:00Z"}`
 
-	c, reqs := stub(t, 200, `{"webhooks":[`+endpoint+`]}`)
+	c, reqs := stub(t, 200, `{"webhooks":[`+endpoint+`],"limit":3,"used":1}`)
 	list, err := c.Webhooks.List(ctx)
-	if err != nil || len(list) != 1 || list[0].Events[0] != EventTaskCompleted {
+	if err != nil || len(list.Webhooks) != 1 || list.Webhooks[0].Events[0] != EventTaskCompleted ||
+		list.Limit != 3 || list.Used != 1 {
 		t.Fatalf("list = %+v, err = %v", list, err)
 	}
 	expect(t, <-reqs, http.MethodGet, "/v1/webhooks", "")
@@ -467,6 +468,13 @@ func TestWebhooks(t *testing.T) {
 	expect(t, r, http.MethodPost, "/v1/webhooks", "")
 	if r.Body != `{"url":"https://example.com/prro-hook","events":["task.completed"]}` {
 		t.Errorf("body = %s", r.Body)
+	}
+
+	c, _ = stub(t, 409, `{"code":"webhook_limit_reached","message":"limit","details":{"limit":3,"used":3}}`)
+	_, err = c.Webhooks.Create(ctx, CreateWebhookParams{URL: "https://example.com/prro-hook"})
+	if apiErr, ok := errors.AsType[*Error](err); !errors.Is(err, ErrWebhookLimitReached) || !ok ||
+		string(apiErr.Details) != `{"limit":3,"used":3}` {
+		t.Fatalf("err = %v", err)
 	}
 
 	updates := map[string]UpdateWebhookParams{
