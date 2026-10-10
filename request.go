@@ -97,7 +97,10 @@ func (c *Client) do(ctx context.Context, r request, out any, opts ...CallOption)
 		}
 		start := time.Now()
 		resp, err := c.httpClient.Do(req)
-		canRetry := retryable && attempt < c.maxRetries && ctx.Err() == nil
+		// Скасований ctx тут не перевіряється: його ловить sleep перед
+		// паузою, тож виклик завершується context.Canceled незалежно від
+		// того, що транспорт встиг повернути — відповідь чи помилку.
+		canRetry := retryable && attempt < c.maxRetries
 
 		if err != nil {
 			c.log(ctx, "prro: request failed", r, attempt, 0, start, err)
@@ -206,7 +209,12 @@ func parseRetryAfter(v string) (time.Duration, bool) {
 	return 0, false
 }
 
+// sleep чекає d або скасування ctx. Уже скасований ctx — одразу помилка:
+// select обирав би випадково, якби таймер теж був готовий.
 func sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
