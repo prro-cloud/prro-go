@@ -85,7 +85,7 @@ func TestEventData(t *testing.T) {
 		{
 			prro.EventTaskCompleted, `{"task_id":"t1","type":"receipt","status":"succeeded","cash_register_id":"r1",
 			"result":{"receipt":{"document_id":"d1","local_number":42,"fiscal_number":"7466800082",
-			"register_fiscal_number":"4001063533","receipt_url":"https://r.prro.cloud/aB3xK9pQvT2mNr7c"}}}`,
+			"register_fiscal_number":"4000000001","receipt_url":"https://r.prro.cloud/aB3xK9pQvT2mNr7c"}}}`,
 			func(t *testing.T, e *Event) {
 				d, err := e.Task()
 				if err != nil || d.Status != prro.TaskSucceeded || d.Result.Receipt.FiscalNumber != "7466800082" {
@@ -105,7 +105,7 @@ func TestEventData(t *testing.T) {
 		},
 		{
 			prro.EventShiftClosed, `{"cash_register_id":"r1","shift_id":"s1","task_id":"t1","testing":false,
-			"zreport":{"document_id":"d9","local_number":50,"fiscal_number":"7466800090","register_fiscal_number":"4001063533",
+			"zreport":{"document_id":"d9","local_number":50,"fiscal_number":"7466800090","register_fiscal_number":"4000000001",
 			"totals":{"realiz":{"count":2,"sum":"130.00","pay_forms":[{"code":0,"name":"ГОТІВКА","sum":"130.00"}],
 			"taxes":[{"letter":"А","name":"ПДВ","rate":"20.00","turnover":"130.00","sum":"21.67"}]},
 			"return":{"count":0,"sum":"0.00"},"service_in":"0.00","service_out":"0.00"}}}`,
@@ -199,7 +199,7 @@ func TestEventData(t *testing.T) {
 			},
 		},
 		{
-			prro.EventReceiptRegistered, `{"cash_register_id":"r1","register_fiscal_number":"4001063533",
+			prro.EventReceiptRegistered, `{"cash_register_id":"r1","register_fiscal_number":"4000000001",
 			"document_id":"d2","task_id":"t2","type":"return","source":"cabinet","user_id":"u1","cashier":"Олена",
 			"local_number":43,"fiscal_number":"7466800083","offline":false,"testing":false,"shift_id":"s1",
 			"shift_number":147,"issued_at":"2026-07-14T10:15:04Z","total":"65.00",

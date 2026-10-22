@@ -69,9 +69,9 @@ const receiptTask = `{
 			"document_id": "0197a2c3-0000-7000-8000-000000000002",
 			"local_number": 42,
 			"fiscal_number": "7466800082",
-			"register_fiscal_number": "4001063533",
+			"register_fiscal_number": "4000000001",
 			"receipt_url": "https://r.prro.cloud/aB3xK9pQvT2mNr7c",
-			"tax_url": "https://cabinet.tax.gov.ua/cashregs/check?fn=4001063533&id=7466800082"
+			"tax_url": "https://cabinet.tax.gov.ua/cashregs/check?fn=4000000001&id=7466800082"
 		}
 	}
 }`
@@ -286,7 +286,7 @@ func TestEmptyIDAndEscaping(t *testing.T) {
 func TestCashRegisters(t *testing.T) {
 	ctx := context.Background()
 
-	c, reqs := stub(t, 200, `{"cash_registers":[{"id":"reg-1","fiscal_number":"4001063533","local_number":"1",
+	c, reqs := stub(t, 200, `{"cash_registers":[{"id":"reg-1","fiscal_number":"4000000001","local_number":"1",
 		"org_name":"ФОП Іваненко","mode":"production","state":"opened"}]}`)
 	list, err := c.CashRegisters.List(ctx)
 	if err != nil || len(list) != 1 || list[0].State != RegisterOpened || list[0].OrgName != "ФОП Іваненко" {
@@ -295,7 +295,7 @@ func TestCashRegisters(t *testing.T) {
 	expect(t, <-reqs, http.MethodGet, "/v1/cash-registers", "")
 
 	c, reqs = stub(t, 200, `{
-		"id":"reg-1","fiscal_number":"4001063533","local_number":"1","mode":"production","state":"opened",
+		"id":"reg-1","fiscal_number":"4000000001","local_number":"1","mode":"production","state":"opened",
 		"shift_mode":"round_the_clock","shift_close_times":["09:00","21:00"],
 		"cash_balance":{"amount":"1500.00","as_of":"2026-08-03T01:07:54Z"},
 		"current_shift":{"id":"s1","number":147,"status":"opened","opened_at":"2026-08-03T01:00:00Z","documents":12},
@@ -391,7 +391,7 @@ func TestShiftsAndOfflineSessions(t *testing.T) {
 func TestZReportTotals(t *testing.T) {
 	c, _ := stub(t, http.StatusCreated, `{"task_id":"t1","type":"close_shift","status":"succeeded",
 		"created_at":"2026-08-03T01:07:53Z","result":{"zreport":{"document_id":"d9","local_number":50,
-		"fiscal_number":"7466800090","register_fiscal_number":"4001063533","totals":{
+		"fiscal_number":"7466800090","register_fiscal_number":"4000000001","totals":{
 		"realiz":{"count":2,"sum":"130.00","pay_forms":[{"code":0,"name":"ГОТІВКА","sum":"130.00"}],
 		"taxes":[{"letter":"А","name":"ПДВ","rate":"20.00","turnover":"130.00","sum":"21.67"}]},
 		"return":{"count":1,"sum":"65.00","pay_forms":[{"code":301,"name":"КАРТКА","sum":"65.00"}],
