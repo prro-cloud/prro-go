@@ -16,6 +16,16 @@ func CheckContractSchema(t *testing.T, typ any, skip []string, path ...string) {
 	checkSchema(t, loadSpec(t).at(append([]string{"components", "schemas"}, path...)...), typ, skip)
 }
 
+// ContractNode повертає скаляр components.schemas.<path>; порожній, якщо
+// вузла немає.
+func ContractNode(t *testing.T, path ...string) string {
+	t.Helper()
+	if n := loadSpec(t).at(append([]string{"components", "schemas"}, path...)...); n != nil {
+		return n.val
+	}
+	return ""
+}
+
 // CheckContractEnum звіряє перелічення components.schemas.<path> з
 // константами want.
 func CheckContractEnum(t *testing.T, want []string, path ...string) {

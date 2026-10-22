@@ -32,6 +32,8 @@ func (s *ShiftsService) Open(ctx context.Context, registerID string, params *Ope
 
 // Close закриває поточну зміну каси registerID: однією операцією формує
 // Z-звіт і документ закриття — обидва в Result.ZReport і Result.ShiftClose.
+// Підсумки, подані до ДПС, з розподілом за податками — у
+// Result.ZReport.Totals.
 func (s *ShiftsService) Close(ctx context.Context, registerID string, opts ...CallOption) (*Task, error) {
 	path, err := pathf("/v1/cash-registers/%s/shifts/current", registerID)
 	if err != nil {

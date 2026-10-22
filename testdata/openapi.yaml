@@ -60,7 +60,7 @@ info:
 
     Автентифікація — Bearer JWT, виданий у кабінеті. Сам кабінет має
     окремий вхід і тут не описаний.
-  version: 0.6.0
+  version: 0.8.0
 
 paths:
   /v1/version:
@@ -136,7 +136,8 @@ paths:
       summary: Зареєструвати розрахунковий документ
       description: >-
         Типи документів: sale — реалізація, return — повернення, storno —
-        сторно, service_in — службове внесення, service_out — інкасація.
+        сторнування попереднього чека, service_in — службове внесення,
+        service_out — інкасація.
 
 
         Сервіс проходить повний фіскальний цикл: локальний номер, XML за
@@ -1180,7 +1181,8 @@ components:
       description: >-
         Структурований опис збою завдання. Простори імен коду: dps.* —
         відмова фіскального сервера, fiscal.* — валідація документа,
-        return.* — звірка повернення з початковим чеком, signer.* — рівень
+        return.* — звірка повернення з початковим чеком, storno.* — звірка
+        сторно з чеком, який воно скасовує, signer.* — рівень
         КЕП, state.* — стан реєстратора. Мову message задає
         Accept-Language, типово українська.
       required: [code, class]
@@ -1320,8 +1322,8 @@ components:
     ReconcileReport:
       type: object
       description: >-
-        Підсумок звіряння реєстратора з ДПС (sync_register): який стан
-        побачили на боці сервера і що виправили в себе.
+        Результат звіряння реєстратора з ДПС (sync_register): що показала
+        ДПС і що сервіс виправив у себе.
       required: [fiscal_number, dps_shift_opened, dps_next_local_number]
       properties:
         fiscal_number: { type: string, description: "Реєстратор, який звіряли." }
@@ -1338,19 +1340,19 @@ components:
         counter_new: { type: integer, format: int64, description: "Наш лічильник після звіряння." }
         shift_adopted:
           type: boolean
-          description: Ми прийняли як свою зміну, відкриту на боці ДПС.
+          description: Сервіс прийняв як свою зміну, відкриту в ДПС.
         shift_abandoned:
           type: boolean
-          description: Ми закрили в себе зміну, якої на боці ДПС немає.
+          description: Сервіс закрив у себе зміну, якої в ДПС немає.
         offline_credentials_refreshed:
           type: boolean
           description: Офлайн-ключі реєстратора оновлено з даних ДПС.
         cash:
           type: object
           description: >-
-            Скільки готівки зрушила поточна зміна за нашим підрахунком і за
-            підсумками зміни на боці ДПС. Присутнє лише тоді, коли на сервері
-            справді триває зміна.
+            Рух готівки за поточну зміну — за підрахунком сервісу (ours) і за
+            даними ДПС (dps). Поле є лише тоді, коли в ДПС справді відкрита
+            зміна.
 
 
             Довідкове поле: за розбіжністю нічого не виправляється.
@@ -1563,6 +1565,7 @@ components:
             сервер: в офлайн-чека до надсилання пакета сесії є лише локально
             обчислений номер.
         original: { $ref: "#/components/schemas/ReturnOriginal" }
+        totals: { $ref: "#/components/schemas/ZReportTotals" }
 
     ReturnOriginal:
       description: >-
@@ -1582,30 +1585,37 @@ components:
             звірено із залишком за ним. false — чека в сервісі немає
             (виданий іншим ПРРО), повернення прийнято без звірки.
 
-    # The two shapes are split rather than merged into one struct with
-    # optional fields because a cross-field rule can say "items are required"
-    # but not "required for three kinds and forbidden for two", and the
-    # forbidding is the part that matters.
+    # The shapes are split rather than merged into one struct with optional
+    # fields because a cross-field rule can say "items are required" but not
+    # "required for two kinds and forbidden for three", and the forbidding is
+    # the part that matters.
+    #
+    # Storno got a shape of its own in 0.7.0. It used to share the settlement
+    # one, items and payments included, and the fiscal server refused every
+    # such storno (error 9, «Сторнуючий документ не може містити ненульову
+    # суму»), so no client ever had one registered — nothing that worked
+    # before stops working, hence a minor bump.
     ReceiptInput:
       description: >-
-        Дві форми документа, які розрізняє поле `type`: розрахунок за товари
-        несе позиції та оплати, рух готівки — лише суму. Поля чужої форми не
-        ігноруються, а відхиляються з 422.
+        Три форми документа, які розрізняє поле `type`: розрахунок за товари
+        несе позиції та оплати, сторно — лише посилання на чек, рух готівки —
+        лише суму. Поля чужої форми не ігноруються, а відхиляються з 422.
       oneOf:
         - $ref: "#/components/schemas/SettlementReceiptInput"
+        - $ref: "#/components/schemas/StornoReceiptInput"
         - $ref: "#/components/schemas/ServiceReceiptInput"
       discriminator:
         propertyName: type
         mapping:
           sale: "#/components/schemas/SettlementReceiptInput"
           return: "#/components/schemas/SettlementReceiptInput"
-          storno: "#/components/schemas/SettlementReceiptInput"
+          storno: "#/components/schemas/StornoReceiptInput"
           service_in: "#/components/schemas/ServiceReceiptInput"
           service_out: "#/components/schemas/ServiceReceiptInput"
 
     SettlementReceiptInput:
       type: object
-      description: Розрахунок за товари — реалізація, повернення або сторно.
+      description: Розрахунок за товари — реалізація або повернення.
       required: [type, items, payments]
       properties:
         cash_register_id:
@@ -1617,9 +1627,9 @@ components:
             відсутнє, або збігається з нею, інакше 422.
         type:
           type: string
-          enum: [sale, return, storno]
+          enum: [sale, return]
           description: >-
-            sale — реалізація; return — повернення; storno — сторно.
+            sale — реалізація; return — повернення.
         cashier:
           type: string
           description: >-
@@ -1657,8 +1667,7 @@ components:
         original:
           type: object
           description: >-
-            Зв'язок із початковим чеком; обов'язковий для повернення та
-            сторно.
+            Зв'язок із початковим чеком; обов'язковий для повернення.
 
 
             Повернення звіряється з початковим чеком, якщо той видано в цьому
@@ -1693,6 +1702,61 @@ components:
           description: >-
             Крок заокруглення готівки десятковим рядком ("0.10" за правилами
             НБУ); без цього поля заокруглення не застосовується.
+    # The storno rules mirror the fiscal server's — it cancels the register's
+    # last document only (error 9, «Сторнуватись може лише останній
+    # документ», live 2026-10-20) — plus what keeps the service's own totals
+    # honest: a storno states no amount, so the shift totals and the drawer
+    # move by the original's figures, which only a journaled check supplies.
+    StornoReceiptInput:
+      type: object
+      description: >-
+        Сторнування попереднього чека (DOCSUBTYPE 5): скасування чека
+        продажу чи повернення, зареєстрованого помилково. Документ не містить
+        позицій, оплат і суми — ДПС реєструє сторно з нульовою сумою.
+
+
+        Сторнувати можна лише останній документ реєстратора: чек продажу чи
+        повернення, виданий у цьому сервісі і ще не сторнований. Інакше
+        завдання завершується помилкою з кодом storno.* і документ не
+        реєструється; для чека, після якого вже є інші документи, оформлюють
+        повернення.
+        Підсумки зміни й залишок готівки зменшуються на суми скасованого
+        чека.
+      required: [type, original]
+      properties:
+        cash_register_id:
+          type: string
+          format: uuid
+          description: >-
+            Реєстратор, на якому реєструють документ. Обов'язковий для POST
+            /v1/receipts; у маршрутах, де касу вже задано в URL, поле або
+            відсутнє, або збігається з нею, інакше 422.
+        type:
+          type: string
+          enum: [storno]
+        cashier:
+          type: string
+          description: >-
+            Ім'я касира, яке друкують у чеку (CASHIER); без нього рядка на чеку
+            не буде.
+        comment:
+          type: string
+          description: >-
+            Вільна примітка, яку друкують на самому документі
+            (CHECKHEAD/COMMENT) — наприклад причина сторнування.
+        mode:
+          type: string
+          enum: [sync, async]
+          default: sync
+          description: >-
+            Режим доставки результату; параметр запиту ?mode= має перевагу над
+            цим полем.
+        original:
+          type: object
+          description: Чек, який скасовує сторно.
+          required: [fiscal_number]
+          properties:
+            fiscal_number: { type: string, description: "Фіскальний номер чека." }
     ServiceReceiptInput:
       type: object
       description: >-
@@ -1899,7 +1963,8 @@ components:
         - receipt.registered
       description: >-
         task.completed і task.failed — кожне завершене завдання;
-        shift.opened і shift.closed — життєвий цикл зміни; key.expiring — раз
+        shift.opened і shift.closed — зміну відкрито чи закрито, схема
+        даних — ShiftEventData; key.expiring — раз
         на добу про сертифікат ключа, що спливає протягом 30 днів;
         register.offline, register.online, register.offline_limit —
         офлайн-сесії та законні межі їх тривалості (36 і 168 годин);
@@ -1911,6 +1976,32 @@ components:
         попередження перед тим, як чеки почнуть відхилятися з 402;
         receipt.registered — зареєстровано чек (продаж, повернення, сторно,
         службове внесення чи видача) з повним вмістом; схема даних — ReceiptRegisteredData.
+
+    ShiftEventData:
+      description: Дані подій shift.opened (зміну відкрито) і shift.closed (зміну закрито).
+      type: object
+      required: [cash_register_id, shift_id, task_id, testing]
+      properties:
+        cash_register_id: { type: string, format: uuid, description: "Каса." }
+        shift_id: { type: string, format: uuid, description: "Зміна." }
+        task_id:
+          type: string
+          format: uuid
+          description: >-
+            Завдання, яке відкрило чи закрило зміну. Зазвичай це відкриття чи
+            закриття зміни. Але зміну може закрити й чек — якщо попереднє
+            закриття не завершилося, — або автоматичне виправлення розбіжності
+            з ДПС.
+        testing: { type: boolean, description: "Тестова зміна: каса працює в режимі test." }
+        zreport:
+          $ref: "#/components/schemas/DocResult"
+          description: >-
+            Є лише в shift.closed. Z-звіт, яким закрито зміну, разом із
+            підсумками (totals). Якщо зміну закрило завдання закриття, це той
+            самий об'єкт, що в його result.zreport.
+
+
+            Поля немає, якщо в сервісі немає Z-звіту цієї зміни.
 
     ReceiptRegisteredData:
       description: >-
@@ -1951,7 +2042,11 @@ components:
           type: string
           format: date-time
           description: Дата й час документа, як їх надруковано.
-        total: { type: string, description: "Сума до сплати; для службових документів — сума руху готівки." }
+        total:
+          type: string
+          description: >-
+            Сума до сплати; для службових документів — сума руху готівки; для
+            сторно — 0.00.
         rounding: { type: string, description: "Заокруглення готівки, якщо було." }
         items:
           type: array
@@ -1984,16 +2079,7 @@ components:
         taxes:
           type: array
           description: Податки чека.
-          items:
-            type: object
-            required: [name, rate, turnover, sum]
-            properties:
-              letter: { type: string }
-              name: { type: string }
-              rate: { type: string, description: "Ставка, відсотки." }
-              turnover: { type: string, description: "Оборот за ставкою." }
-              sum: { type: string, description: "Сума податку." }
-              excluded: { type: boolean, description: "Податок нараховано понад ціну." }
+          items: { $ref: "#/components/schemas/TaxTotal" }
         comment: { type: string, description: "Коментар, надрукований на чеку." }
         original:
           type: object
@@ -2101,7 +2187,8 @@ components:
 
 
         Рухають його готівкові рядки оплат — додають на реалізації,
-        віднімають на поверненні та сторно — і службові документи;
+        віднімають на поверненні та сторно (на сторно — оплату скасованого
+        чека) — і службові документи;
         безготівкові форми не рухають нічого. Береться `sum` рядка оплати,
         решта вже врахована. Лічильник належить реєстратору, а не зміні, і
         Z-звіт його не скидає.
@@ -2122,19 +2209,20 @@ components:
     ShiftTotalsSide:
       type: object
       description: >-
-        Один бік підсумків зміни — реалізація або повернення: кількість
-        документів, сума і розклад за формами оплати.
+        Продажі або повернення: кількість чеків, сума й розподіл за формами
+        оплати.
       required: [count, sum]
       properties:
         count:
           type: integer
-          description: Кількість розрахункових документів цього боку.
+          description: Кількість чеків.
         sum: { $ref: "#/components/schemas/CashAmount" }
         pay_forms:
           type: array
           description: >-
-            Накопичено за формами оплати. code/name — пара PAYFORMCD /
-            PAYFORMNM, яка піде в Z-звіт; масиву немає, поки бік порожній.
+            Суми за формами оплати. code і name — код і назва форми оплати,
+            як у Z-звіті (PAYFORMCD і PAYFORMNM). Поля немає, якщо чеків
+            немає.
           items:
             type: object
             required: [code, name, sum]
@@ -2146,17 +2234,66 @@ components:
     ShiftTotals:
       type: object
       description: >-
-        Поточні підсумки відкритої зміни — те саме накопичення, з якого буде
-        побудований Z-звіт.
+        Підсумки відкритої зміни на цей момент. З цих сум буде складено
+        Z-звіт під час закриття зміни. realiz — продажі, return — повернення.
 
 
-        Сторно віднімається з боку реалізації, а не додається до повернень.
-        Службові внесення й видачі не належать до жодного боку. Розкладу за
-        податковими літерами тут немає — він є лише в Z-звіті.
+        Сторновані чеки не враховуються: скасований чек віднімається з продажів
+        чи повернень, куди його було зараховано. Службові внесення й видачі
+        рахуються окремо — у service_in і service_out.
+
+
+        Розподілу за податками тут немає. Він з'являється в підсумках Z-звіту
+        (ZReportTotals) після закриття зміни.
       required: [realiz, return, service_in, service_out]
       properties:
         realiz: { $ref: "#/components/schemas/ShiftTotalsSide" }
         return: { $ref: "#/components/schemas/ShiftTotalsSide" }
+        service_in: { $ref: "#/components/schemas/CashAmount" }
+        service_out: { $ref: "#/components/schemas/CashAmount" }
+
+    TaxTotal:
+      type: object
+      description: Податок за однією ставкою — оборот і сума податку.
+      required: [name, rate, turnover, sum]
+      properties:
+        letter: { type: string, description: "Податкова літера, напр. «А»." }
+        name: { type: string, description: "Назва податку, напр. «ПДВ»." }
+        rate: { type: string, description: "Ставка у відсотках, напр. «20.00»." }
+        turnover: { type: string, description: "Оборот — сума продажів за цією ставкою." }
+        sum: { type: string, description: "Сума податку." }
+        excluded: { type: boolean, description: "true — податок додано до ціни, а не включено в неї." }
+
+    ZReportTotalsSide:
+      description: >-
+        Продажі або повернення за зміну: кількість чеків, сума, розподіл за
+        формами оплати й за податками.
+      allOf:
+        - $ref: "#/components/schemas/ShiftTotalsSide"
+        - type: object
+          properties:
+            taxes:
+              type: array
+              description: Податки за ставками. Поля немає, якщо податків не було.
+              items: { $ref: "#/components/schemas/TaxTotal" }
+
+    ZReportTotals:
+      type: object
+      description: >-
+        Підсумки Z-звіту — ті самі суми, що в документі, надісланому до ДПС.
+        Поле є лише в Z-звіті. realiz — продажі, return — повернення.
+
+
+        Якщо за зміну не було повернень, службових внесень чи видач,
+        відповідні суми дорівнюють нулю.
+
+
+        Z-звіт, створений в офлайн-режимі (offline: true), надходить до ДПС
+        пізніше — разом з іншими документами офлайн-сесії.
+      required: [realiz, return, service_in, service_out]
+      properties:
+        realiz: { $ref: "#/components/schemas/ZReportTotalsSide" }
+        return: { $ref: "#/components/schemas/ZReportTotalsSide" }
         service_in: { $ref: "#/components/schemas/CashAmount" }
         service_out: { $ref: "#/components/schemas/CashAmount" }
 

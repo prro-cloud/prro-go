@@ -55,6 +55,17 @@ fmt.Println(r.TaxURL)       // той самий чек у кабінеті ДП
 
 Повний цикл — каса, зміна, чек — у [examples/quickstart](examples/quickstart/main.go).
 
+Помилково виданий чек скасовують сторно — лише останній документ каси; для
+давнішого чека оформлюють повернення:
+
+```go
+storno, err := c.Receipts.Create(ctx, &prro.StornoReceipt{
+	CashRegisterID: registerID,
+	Comment:        "Помилка касира",
+	Original:       prro.StornoOriginal{FiscalNumber: r.FiscalNumber},
+})
+```
+
 ## Ключові механіки
 
 ### Ідемпотентність

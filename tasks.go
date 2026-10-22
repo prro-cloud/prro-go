@@ -96,6 +96,9 @@ type DocResult struct {
 	TaxURL string `json:"tax_url,omitempty"`
 	// Original — початковий чек; лише в документа повернення.
 	Original *ReturnOriginal `json:"original,omitempty"`
+	// Totals — підсумки Z-звіту, ті самі суми, що в документі, поданому до
+	// ДПС; лише в Z-звіту.
+	Totals *ZReportTotals `json:"totals,omitempty"`
 }
 
 // ReturnOriginal — початковий чек повернення.
@@ -108,6 +111,41 @@ type ReturnOriginal struct {
 	// Verified — повернення звірено із залишком за початковим чеком; false —
 	// чек видано іншим ПРРО, повернення прийнято без звірки.
 	Verified bool `json:"verified"`
+}
+
+// ZReportTotals — підсумки Z-звіту з розподілом за податками. Якщо за зміну
+// не було повернень, службових внесень чи видач, відповідні суми нульові.
+// Z-звіт офлайн-сесії (Offline у [DocResult]) надходить до ДПС пізніше —
+// разом з іншими документами сесії.
+type ZReportTotals struct {
+	Sales      ZReportTotalsSide `json:"realiz"`
+	Returns    ZReportTotalsSide `json:"return"`
+	ServiceIn  Amount            `json:"service_in"`
+	ServiceOut Amount            `json:"service_out"`
+}
+
+// ZReportTotalsSide — продажі або повернення за зміну: кількість чеків,
+// сума, розподіл за формами оплати й за податками.
+type ZReportTotalsSide struct {
+	ShiftTotalsSide
+	// Taxes — податки за ставками; порожнє, якщо податків не було.
+	Taxes []TaxTotal `json:"taxes,omitempty"`
+}
+
+// TaxTotal — податок за однією ставкою: оборот і сума податку.
+type TaxTotal struct {
+	// Letter — податкова літера: «А».
+	Letter string `json:"letter,omitempty"`
+	// Name — назва податку: «ПДВ».
+	Name string `json:"name"`
+	// Rate — ставка у відсотках: "20.00".
+	Rate string `json:"rate"`
+	// Turnover — оборот, сума продажів за ставкою.
+	Turnover Amount `json:"turnover"`
+	// Sum — сума податку.
+	Sum Amount `json:"sum"`
+	// Excluded — податок додано до ціни, а не включено в неї.
+	Excluded bool `json:"excluded,omitempty"`
 }
 
 // OfflineAbandonResult — результат відмови від офлайн-сесії.
@@ -150,8 +188,8 @@ type AbandonedDocument struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ReconcileReport — підсумок звіряння реєстратора з ДПС: який стан
-// побачили на боці ДПС і що виправили в сервісі.
+// ReconcileReport — результат звіряння реєстратора з ДПС: що показала ДПС
+// і що сервіс виправив у себе.
 type ReconcileReport struct {
 	FiscalNumber       string `json:"fiscal_number"`
 	DPSShiftOpened     bool   `json:"dps_shift_opened"`
@@ -159,12 +197,13 @@ type ReconcileReport struct {
 	DPSTesting         bool   `json:"dps_testing,omitempty"`
 	CounterOld         int64  `json:"counter_old,omitempty"`
 	CounterNew         int64  `json:"counter_new,omitempty"`
-	// ShiftAdopted — сервіс прийняв як свою зміну, відкриту на боці ДПС.
+	// ShiftAdopted — сервіс прийняв як свою зміну, відкриту в ДПС.
 	ShiftAdopted bool `json:"shift_adopted,omitempty"`
-	// ShiftAbandoned — сервіс закрив у себе зміну, якої на боці ДПС немає.
+	// ShiftAbandoned — сервіс закрив у себе зміну, якої в ДПС немає.
 	ShiftAbandoned              bool `json:"shift_abandoned,omitempty"`
 	OfflineCredentialsRefreshed bool `json:"offline_credentials_refreshed,omitempty"`
-	// Cash — рух готівки зміни за обліком сервісу і за ДПС; довідково.
+	// Cash — рух готівки зміни за обліком сервісу і за ДПС; лише коли в ДПС
+	// відкрита зміна, довідково.
 	Cash *ReconcileCash `json:"cash,omitempty"`
 	// Totals — підсумки зміни за обліком сервісу і за ДПС.
 	Totals *ReconcileTotals `json:"totals,omitempty"`

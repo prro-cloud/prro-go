@@ -2,6 +2,7 @@ package prro
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,7 +16,7 @@ type ReceiptType string
 const (
 	ReceiptSale       ReceiptType = "sale"        // реалізація
 	ReceiptReturn     ReceiptType = "return"      // повернення
-	ReceiptStorno     ReceiptType = "storno"      // сторно
+	ReceiptStorno     ReceiptType = "storno"      // сторнування попереднього чека
 	ReceiptServiceIn  ReceiptType = "service_in"  // службове внесення
 	ReceiptServiceOut ReceiptType = "service_out" // службова видача (інкасація)
 )
@@ -34,19 +35,19 @@ const (
 )
 
 // ReceiptInput — документ для [ReceiptsService.Create]: [*SettlementReceipt]
-// (розрахунок за товари) або [*ServiceReceipt] (рух готівки). Інших
-// реалізацій немає — поля чужої форми API відхиляє з 422, тож форми
-// розділено на рівні типів.
+// (розрахунок за товари), [*StornoReceipt] (сторно) або [*ServiceReceipt]
+// (рух готівки). Інших реалізацій немає — поля чужої форми API відхиляє з
+// 422, тож форми розділено на рівні типів.
 type ReceiptInput interface {
 	validateReceipt() error
 }
 
-// SettlementReceipt — розрахунок за товари: реалізація, повернення або
-// сторно.
+// SettlementReceipt — розрахунок за товари: реалізація або повернення.
+// Сторно — окрема форма, [StornoReceipt].
 type SettlementReceipt struct {
 	// CashRegisterID — каса, на якій реєструють документ; обов'язкове.
 	CashRegisterID string `json:"cash_register_id"`
-	// Type — [ReceiptSale], [ReceiptReturn] або [ReceiptStorno].
+	// Type — [ReceiptSale] або [ReceiptReturn].
 	Type ReceiptType `json:"type"`
 	// Cashier — ім'я касира, яке друкують у чеку; без нього рядка не буде.
 	Cashier string `json:"cashier,omitempty"`
@@ -58,7 +59,7 @@ type SettlementReceipt struct {
 	// фіскальним часом документа не стає. Час у майбутньому або старіший за
 	// 31 день — 422.
 	SoldAt time.Time `json:"sold_at,omitzero"`
-	// Original — початковий чек; обов'язковий для повернення та сторно.
+	// Original — початковий чек; обов'язковий для повернення.
 	Original *ReceiptOriginal `json:"original,omitempty"`
 	// Items — позиції чека; щонайменше одна.
 	Items []ReceiptItem `json:"items"`
@@ -74,13 +75,15 @@ func (r *SettlementReceipt) validateReceipt() error {
 		return errNilReceipt
 	}
 	switch r.Type {
-	case ReceiptSale, ReceiptReturn, ReceiptStorno:
+	case ReceiptSale, ReceiptReturn:
 		return nil
+	case ReceiptStorno:
+		return errors.New("prro: SettlementReceipt: storno is a StornoReceipt")
 	}
-	return fmt.Errorf("prro: SettlementReceipt: type must be sale, return or storno, got %q", r.Type)
+	return fmt.Errorf("prro: SettlementReceipt: type must be sale or return, got %q", r.Type)
 }
 
-// ReceiptOriginal — посилання на початковий чек повернення або сторно.
+// ReceiptOriginal — посилання на початковий чек повернення.
 type ReceiptOriginal struct {
 	// FiscalNumber — фіскальний номер початкового чека.
 	FiscalNumber string `json:"fiscal_number"`
@@ -165,6 +168,64 @@ type CardDetails struct {
 	// Commission — комісія еквайра, яку платить платник; у звичайному
 	// продажу лишається порожньою.
 	Commission Amount `json:"commission,omitempty"`
+}
+
+// StornoReceipt — сторнування попереднього чека: скасування чека продажу чи
+// повернення, зареєстрованого помилково. Позицій, оплат і суми не має — ДПС
+// реєструє сторно з нульовою сумою, а підсумки зміни й залишок готівки
+// зменшуються на суми скасованого чека.
+//
+// Сторнувати можна лише останній документ каси: чек продажу чи повернення,
+// виданий у сервісі і ще не сторнований. Інакше завдання завершується
+// збоєм storno.* і документ не реєструється; для чека, після якого вже є
+// інші документи, оформлюють повернення.
+type StornoReceipt struct {
+	// Type — завжди storno; заповнювати не потрібно.
+	Type StornoType `json:"type"`
+	// CashRegisterID — каса, на якій реєструють документ; обов'язкове.
+	CashRegisterID string `json:"cash_register_id"`
+	// Cashier — ім'я касира, яке друкують у документі.
+	Cashier string `json:"cashier,omitempty"`
+	// Comment — примітка, яку друкують на документі, — наприклад причина
+	// сторнування.
+	Comment string `json:"comment,omitempty"`
+	// Original — чек, який скасовує сторно.
+	Original StornoOriginal `json:"original"`
+}
+
+// StornoOriginal — чек, який скасовує сторно.
+type StornoOriginal struct {
+	// FiscalNumber — фіскальний номер чека.
+	FiscalNumber string `json:"fiscal_number"`
+}
+
+func (r *StornoReceipt) validateReceipt() error {
+	if r == nil {
+		return errNilReceipt
+	}
+	if r.Original.FiscalNumber == "" {
+		return errors.New("prro: StornoReceipt: original fiscal number is required")
+	}
+	return nil
+}
+
+// StornoType — поле type форми [StornoReceipt]: нульове значення
+// кодується як "storno", єдине значення цієї форми.
+type StornoType struct{}
+
+// MarshalJSON кодує [ReceiptStorno].
+func (StornoType) MarshalJSON() ([]byte, error) { return json.Marshal(ReceiptStorno) }
+
+// UnmarshalJSON приймає лише [ReceiptStorno].
+func (*StornoType) UnmarshalJSON(b []byte) error {
+	var v ReceiptType
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	if v != ReceiptStorno {
+		return fmt.Errorf("prro: StornoReceipt: type must be storno, got %q", v)
+	}
+	return nil
 }
 
 // ServiceReceipt — рух готівки повз продаж: службове внесення
