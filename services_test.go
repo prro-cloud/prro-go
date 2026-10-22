@@ -139,6 +139,9 @@ func TestReceiptsCreateRejectsBadInput(t *testing.T) {
 		"settlement as svc":  &SettlementReceipt{Type: ReceiptServiceIn},
 		"service as sale":    &ServiceReceipt{Type: ReceiptSale},
 		"settlement no type": &SettlementReceipt{},
+		"settlement storno":  &SettlementReceipt{Type: ReceiptStorno},
+		"typed nil storno":   (*StornoReceipt)(nil),
+		"storno no original": &StornoReceipt{CashRegisterID: "reg-1"},
 	}
 	for name, in := range inputs {
 		if _, err := c.Receipts.Create(context.Background(), in); err == nil {
@@ -147,6 +150,48 @@ func TestReceiptsCreateRejectsBadInput(t *testing.T) {
 	}
 	if len(reqs) != 0 {
 		t.Errorf("%d requests sent for invalid input", len(reqs))
+	}
+}
+
+func TestReceiptsCreateStorno(t *testing.T) {
+	c, reqs := stub(t, http.StatusCreated, receiptTask)
+	_, err := c.Receipts.Create(context.Background(), &StornoReceipt{
+		CashRegisterID: "reg-1",
+		Comment:        "Помилка касира",
+		Original:       StornoOriginal{FiscalNumber: "7466800082"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-reqs
+	expect(t, r, http.MethodPost, "/v1/receipts", "")
+	want := `{"type":"storno","cash_register_id":"reg-1","comment":"Помилка касира","original":{"fiscal_number":"7466800082"}}`
+	if r.Body != want || r.Key == "" {
+		t.Errorf("body =\n%s\nwant\n%s\nkey = %q", r.Body, want, r.Key)
+	}
+}
+
+// Тип storno не губить полів структури, у яку StornoReceipt вбудовано.
+func TestStornoReceiptEmbedded(t *testing.T) {
+	type queued struct {
+		StornoReceipt
+		OrderID string `json:"order_id"`
+	}
+	in := queued{StornoReceipt{CashRegisterID: "reg-1", Original: StornoOriginal{FiscalNumber: "7466800082"}}, "o-1"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"type":"storno","cash_register_id":"reg-1","original":{"fiscal_number":"7466800082"},"order_id":"o-1"}`
+	if string(b) != want {
+		t.Errorf("body =\n%s\nwant\n%s", b, want)
+	}
+	var out queued
+	if err := json.Unmarshal(b, &out); err != nil || out != in {
+		t.Errorf("round trip = %+v, err = %v", out, err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"sale"}`), &out); err == nil {
+		t.Error("type sale decoded into StornoReceipt")
 	}
 }
 
@@ -340,6 +385,27 @@ func TestShiftsAndOfflineSessions(t *testing.T) {
 	expect(t, r, http.MethodPost, "/v1/cash-registers/r1/offline-session/retry", "")
 	if r.Key != "" {
 		t.Errorf("retry carries Idempotency-Key %q", r.Key)
+	}
+}
+
+func TestZReportTotals(t *testing.T) {
+	c, _ := stub(t, http.StatusCreated, `{"task_id":"t1","type":"close_shift","status":"succeeded",
+		"created_at":"2026-08-03T01:07:53Z","result":{"zreport":{"document_id":"d9","local_number":50,
+		"fiscal_number":"7466800090","register_fiscal_number":"4001063533","totals":{
+		"realiz":{"count":2,"sum":"130.00","pay_forms":[{"code":0,"name":"ГОТІВКА","sum":"130.00"}],
+		"taxes":[{"letter":"А","name":"ПДВ","rate":"20.00","turnover":"130.00","sum":"21.67"}]},
+		"return":{"count":1,"sum":"65.00","pay_forms":[{"code":301,"name":"КАРТКА","sum":"65.00"}],
+		"taxes":[{"letter":"А","name":"ПДВ","rate":"20.00","turnover":"65.00","sum":"10.83","excluded":true}]},
+		"service_in":"500.00","service_out":"0.00"}}}}`)
+	task, err := c.Shifts.Close(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tot := task.Result.ZReport.Totals
+	if tot == nil || tot.Sales.Count != 2 || tot.Sales.Sum != "130.00" || tot.Sales.PayForms[0].Name != "ГОТІВКА" ||
+		tot.Sales.Taxes[0].Turnover != "130.00" || tot.Returns.PayForms[0].Code != 301 || !tot.Returns.Taxes[0].Excluded ||
+		tot.ServiceIn != "500.00" {
+		t.Errorf("totals = %+v", tot)
 	}
 }
 

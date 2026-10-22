@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -35,17 +36,19 @@ func (n *ynode) set(key, val string) *ynode {
 	return child
 }
 
-// at повертає вузол за шляхом ключів; "[]" — перший елемент послідовності.
+// at повертає вузол за шляхом ключів; "[]" — перший елемент послідовності,
+// "[1]" — другий.
 func (n *ynode) at(path ...string) *ynode {
 	for _, k := range path {
 		if n == nil {
 			return nil
 		}
-		if k == "[]" {
-			if len(n.items) == 0 {
+		if inner, ok := strings.CutPrefix(k, "["); ok {
+			i, _ := strconv.Atoi(strings.TrimSuffix(inner, "]"))
+			if i >= len(n.items) {
 				return nil
 			}
-			n = n.items[0]
+			n = n.items[i]
 			continue
 		}
 		n = n.m[k]
@@ -340,7 +343,11 @@ func TestContractEnums(t *testing.T) {
 		},
 		{
 			path: []string{"SettlementReceiptInput", "properties", "type"},
-			want: str(string(ReceiptSale), string(ReceiptReturn), string(ReceiptStorno)),
+			want: str(string(ReceiptSale), string(ReceiptReturn)),
+		},
+		{
+			path: []string{"StornoReceiptInput", "properties", "type"},
+			want: str(string(ReceiptStorno)),
 		},
 		{
 			path: []string{"ServiceReceiptInput", "properties", "type"},
@@ -457,6 +464,11 @@ func TestContractSchemas(t *testing.T) {
 		// машинному API не потрібні.
 		{schema("TaskResult"), TaskResult{}, []string{"key_verification", "key_password_check", "dps_objects"}},
 		{schema("DocResult"), DocResult{}, nil},
+		{schema("ZReportTotals"), ZReportTotals{}, nil},
+		// Решту полів ZReportTotalsSide дає вбудований ShiftTotalsSide
+		// (allOf[0], перевіряється в TestContractZReportTotalsSide).
+		{schema("ZReportTotalsSide", "allOf", "[1]"), ZReportTotalsSide{}, nil},
+		{schema("TaxTotal"), TaxTotal{}, nil},
 		{schema("ReturnOriginal"), ReturnOriginal{}, nil},
 		{schema("OfflineAbandonResult"), OfflineAbandonResult{}, nil},
 		{schema("AbandonedDocument"), AbandonedDocument{}, nil},
@@ -467,6 +479,8 @@ func TestContractSchemas(t *testing.T) {
 		// mode передається параметром запиту (WithAsync), а не полем тіла.
 		{schema("SettlementReceiptInput"), SettlementReceipt{}, []string{"mode"}},
 		{schema("SettlementReceiptInput", "properties", "original"), ReceiptOriginal{}, nil},
+		{schema("StornoReceiptInput"), StornoReceipt{}, []string{"mode"}},
+		{schema("StornoReceiptInput", "properties", "original"), StornoOriginal{}, nil},
 		{schema("ServiceReceiptInput"), ServiceReceipt{}, []string{"mode"}},
 		{schema("ReceiptItem"), ReceiptItem{}, nil},
 		{schema("ReceiptItem", "properties", "discount"), Discount{}, nil},
@@ -489,6 +503,17 @@ func TestContractSchemas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		checkSchema(t, spec.at(tt.path...), tt.typ, tt.skip)
+	}
+}
+
+func TestContractZReportTotalsSide(t *testing.T) {
+	ref := loadSpec(t).at("components", "schemas", "ZReportTotalsSide", "allOf", "[]", "$ref")
+	if ref == nil || ref.val != "#/components/schemas/ShiftTotalsSide" {
+		t.Fatalf("ZReportTotalsSide.allOf[0] = %+v, want $ref ShiftTotalsSide", ref)
+	}
+	f, ok := reflect.TypeFor[ZReportTotalsSide]().FieldByName("ShiftTotalsSide")
+	if !ok || !f.Anonymous {
+		t.Error("ZReportTotalsSide does not embed ShiftTotalsSide")
 	}
 }
 

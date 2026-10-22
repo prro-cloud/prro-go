@@ -104,6 +104,22 @@ func TestEventData(t *testing.T) {
 			},
 		},
 		{
+			prro.EventShiftClosed, `{"cash_register_id":"r1","shift_id":"s1","task_id":"t1","testing":false,
+			"zreport":{"document_id":"d9","local_number":50,"fiscal_number":"7466800090","register_fiscal_number":"4001063533",
+			"totals":{"realiz":{"count":2,"sum":"130.00","pay_forms":[{"code":0,"name":"ГОТІВКА","sum":"130.00"}],
+			"taxes":[{"letter":"А","name":"ПДВ","rate":"20.00","turnover":"130.00","sum":"21.67"}]},
+			"return":{"count":0,"sum":"0.00"},"service_in":"0.00","service_out":"0.00"}}}`,
+			func(t *testing.T, e *Event) {
+				d, err := e.Shift()
+				if err != nil || d.ZReport == nil || d.ZReport.Totals == nil {
+					t.Fatalf("shift = %+v, err = %v", d, err)
+				}
+				if s := d.ZReport.Totals.Sales; s.Count != 2 || s.PayForms[0].Sum != "130.00" || s.Taxes[0].Sum != "21.67" {
+					t.Errorf("zreport totals = %+v", d.ZReport.Totals)
+				}
+			},
+		},
+		{
 			prro.EventKeyExpiring, `{"key_id":"k1","cash_register_ids":["r1","r2"],"cert_subject":"ФОП Іваненко",
 			"cert_valid_to":"2026-08-01T00:00:00Z"}`,
 			func(t *testing.T, e *Event) {

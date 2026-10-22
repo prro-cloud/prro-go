@@ -137,8 +137,10 @@ type CashBalance struct {
 	AsOf time.Time `json:"as_of,omitzero"`
 }
 
-// ShiftTotals — поточні підсумки відкритої зміни. Сторно віднімається з
-// реалізації; службові внесення й видачі не належать до жодного боку.
+// ShiftTotals — поточні підсумки відкритої зміни, з яких буде складено
+// Z-звіт. Сторнований чек віднімається з продажів чи повернень, куди його
+// було зараховано; службові внесення й видачі рахуються окремо. Розподілу за
+// податками тут немає — він є в підсумках Z-звіту, [ZReportTotals].
 type ShiftTotals struct {
 	Sales      ShiftTotalsSide `json:"realiz"`
 	Returns    ShiftTotalsSide `json:"return"`
@@ -146,11 +148,12 @@ type ShiftTotals struct {
 	ServiceOut Amount          `json:"service_out"`
 }
 
-// ShiftTotalsSide — один бік підсумків зміни: кількість документів, сума і
-// розклад за формами оплати.
+// ShiftTotalsSide — продажі або повернення: кількість чеків, сума й
+// розподіл за формами оплати.
 type ShiftTotalsSide struct {
-	Count    int            `json:"count"`
-	Sum      Amount         `json:"sum"`
+	Count int    `json:"count"`
+	Sum   Amount `json:"sum"`
+	// PayForms — суми за формами оплати; порожнє, якщо чеків немає.
 	PayForms []PayFormTotal `json:"pay_forms,omitempty"`
 }
 

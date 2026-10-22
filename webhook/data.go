@@ -28,9 +28,18 @@ type TaskData struct {
 type ShiftData struct {
 	CashRegisterID string `json:"cash_register_id"`
 	ShiftID        string `json:"shift_id"`
-	TaskID         string `json:"task_id"`
+	// TaskID — завдання, яке відкрило чи закрило зміну. Зазвичай це
+	// відкриття чи закриття зміни, але зміну може закрити й чек, якщо
+	// попереднє закриття не завершилося, або автоматичне виправлення
+	// розбіжності з ДПС.
+	TaskID string `json:"task_id"`
 	// Testing — зміна тестова: каса в режимі test.
 	Testing bool `json:"testing"`
+	// ZReport — Z-звіт, яким закрито зміну, разом із підсумками (Totals);
+	// лише в shift.closed і лише якщо Z-звіт зміни є в сервісі. Якщо зміну
+	// закрило завдання закриття, це той самий документ, що в його
+	// Result.ZReport.
+	ZReport *prro.DocResult `json:"zreport,omitempty"`
 }
 
 // KeyData — дані події key.expiring.
@@ -182,13 +191,14 @@ type ReceiptData struct {
 	ShiftNumber int64  `json:"shift_number,omitempty"`
 	// IssuedAt — дата й час документа, як їх надруковано.
 	IssuedAt time.Time `json:"issued_at"`
-	// Total — сума до сплати; для службових документів — сума руху готівки.
+	// Total — сума до сплати; для службових документів — сума руху готівки;
+	// для сторно — 0.00.
 	Total prro.Amount `json:"total"`
 	// Rounding — заокруглення готівки, якщо було.
 	Rounding prro.Amount      `json:"rounding,omitempty"`
 	Items    []ReceiptLine    `json:"items,omitempty"`
 	Payments []ReceiptPayment `json:"payments,omitempty"`
-	Taxes    []ReceiptTax     `json:"taxes,omitempty"`
+	Taxes    []prro.TaxTotal  `json:"taxes,omitempty"`
 	// Comment — коментар, надрукований на чеку.
 	Comment string `json:"comment,omitempty"`
 	// Original — чек, який повертає повернення чи скасовує сторно.
@@ -225,20 +235,6 @@ type ReceiptPayment struct {
 	// Name — назва, надрукована на чеку.
 	Name string      `json:"name"`
 	Sum  prro.Amount `json:"sum"`
-}
-
-// ReceiptTax — податок зареєстрованого чека.
-type ReceiptTax struct {
-	Letter string `json:"letter,omitempty"`
-	Name   string `json:"name"`
-	// Rate — ставка у відсотках: "20.00".
-	Rate string `json:"rate"`
-	// Turnover — оборот за ставкою.
-	Turnover prro.Amount `json:"turnover"`
-	// Sum — сума податку.
-	Sum prro.Amount `json:"sum"`
-	// Excluded — податок нараховано понад ціну.
-	Excluded bool `json:"excluded,omitempty"`
 }
 
 // DPSData — дані подій system.dps_*: режим роботи з ДПС після переходу і
