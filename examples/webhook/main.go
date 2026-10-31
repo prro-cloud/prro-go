@@ -51,6 +51,10 @@ func handle(ctx context.Context, e *webhook.Event) error {
 		if err != nil {
 			return err
 		}
+		if d.LimitsLifted {
+			log.Printf("каса %s офлайн уже %s (межі знято)", d.CashRegisterID, d.SessionUsed)
+			break
+		}
 		log.Printf("каса %s офлайн уже %s — закрийте сесію", d.CashRegisterID, d.SessionUsed)
 
 	case prro.EventClientBalanceLow:

@@ -175,13 +175,28 @@ type OfflineSession struct {
 	Documents int64     `json:"documents"`
 	// LastSignificantAt — останній документ, що продовжує сесію.
 	LastSignificantAt time.Time `json:"last_significant_at,omitzero"`
+	// SubmitPausedAt — коли сервіс зупинив надсилання офлайн-пакетів, бо ДПС
+	// відхилила пакет; нульовий час — надсилання не зупинено. Відновлюють
+	// через [OfflineSessionsService.Retry], усунувши причину.
+	SubmitPausedAt time.Time `json:"submit_paused_at,omitzero"`
+	// SubmitFault — помилка, з якою ДПС відхилила пакет; nil, поки
+	// надсилання не зупинено.
+	SubmitFault *Fault `json:"submit_fault,omitempty"`
 }
 
 // OfflineLimits — законодавчі межі офлайн-роботи: 36 годин на сесію і 168
-// годин на календарний місяць, у секундах.
+// годин на календарний місяць, у секундах. Використаний час рахують від
+// початку сесії або від RestoredAt, якщо він пізніший.
 type OfflineLimits struct {
 	SessionSeconds int64 `json:"session_seconds"`
 	MonthSeconds   int64 `json:"month_seconds"`
+	// Enforced — межі діють. false — межі знято за пунктом 13 розділу
+	// «Прикінцеві положення» Закону № 265: час офлайн-роботи рахується, але
+	// документи через межі не відхиляються.
+	Enforced bool `json:"enforced"`
+	// RestoredAt — коли межі повернули після зняття; нульовий час — межі не
+	// знімали.
+	RestoredAt time.Time `json:"restored_at,omitzero"`
 }
 
 // Attention — позначка «каса потребує уваги».

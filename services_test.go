@@ -267,7 +267,7 @@ func TestTasksWaitDeadline(t *testing.T) {
 
 func TestEmptyIDAndEscaping(t *testing.T) {
 	c, reqs := stub(t, 200, `{"id":"a/b","fiscal_number":"1","local_number":"1","mode":"test","state":"closed",
-		"offline_limits":{"session_seconds":129600,"month_seconds":604800}}`)
+		"offline_limits":{"session_seconds":129600,"month_seconds":604800,"enforced":true}}`)
 	if _, err := c.Tasks.Get(context.Background(), ""); !errors.Is(err, errEmptyID) {
 		t.Errorf("empty id: err = %v", err)
 	}
@@ -301,7 +301,7 @@ func TestCashRegisters(t *testing.T) {
 		"current_shift":{"id":"s1","number":147,"status":"opened","opened_at":"2026-08-03T01:00:00Z","documents":12},
 		"shift_totals":{"realiz":{"count":3,"sum":"195.00","pay_forms":[{"code":0,"name":"ГОТІВКА","sum":"130.00"}]},
 			"return":{"count":0,"sum":"0.00"},"service_in":"0.00","service_out":"0.00"},
-		"offline_limits":{"session_seconds":129600,"month_seconds":604800},
+		"offline_limits":{"session_seconds":129600,"month_seconds":604800,"enforced":true},
 		"attention":{"reason":"auto_close_failing","since":"2026-08-02T21:00:00Z"}}`)
 	st, err := c.CashRegisters.Get(ctx, "reg-1")
 	if err != nil {
@@ -312,6 +312,25 @@ func TestCashRegisters(t *testing.T) {
 		st.ShiftTotals.Sales.PayForms[0].Name != "ГОТІВКА" || st.OfflineLimits.SessionSeconds != 36*3600 ||
 		st.Attention.Reason != AttentionAutoCloseFailing || st.OfflineSession != nil {
 		t.Errorf("state = %+v", st)
+	}
+
+	c, _ = stub(t, 200, `{
+		"id":"reg-1","fiscal_number":"4000000001","local_number":"1","mode":"production","state":"offline",
+		"offline_session":{"id":"os1","dps_session_id":77,"started_at":"2026-08-01T00:00:00Z","documents":40,
+			"submit_paused_at":"2026-08-02T10:00:00Z",
+			"submit_fault":{"code":"dps.offline_package_rejected","class":"user_action","message":"Пакет відхилено"}},
+		"offline_limits":{"session_seconds":129600,"month_seconds":604800,"enforced":false,
+			"restored_at":"2026-07-01T00:00:00Z"},
+		"offline_month_used_seconds":180000,
+		"attention":{"reason":"offline_submission_paused","since":"2026-08-02T10:00:00Z"}}`)
+	st, err = c.CashRegisters.Get(ctx, "reg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess := st.OfflineSession; sess == nil || sess.SubmitPausedAt.IsZero() || sess.SubmitFault == nil ||
+		sess.SubmitFault.Class != FaultUserAction || st.OfflineLimits.Enforced || st.OfflineLimits.RestoredAt.IsZero() ||
+		st.Attention.Reason != AttentionOfflineSubmissionPaused {
+		t.Errorf("offline state = %+v, session = %+v", st, st.OfflineSession)
 	}
 
 	c, reqs = stub(t, 200, `{"cleared":true}`)

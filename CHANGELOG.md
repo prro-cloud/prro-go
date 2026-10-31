@@ -6,6 +6,31 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-31
+
+Контракт API 0.10.0.
+
+### Додано
+
+- `OfflineLimits.Enforced` — чи діють законодавчі межі офлайн-роботи.
+  `false` — межі знято (п. 13 «Прикінцевих положень» Закону № 265): час
+  рахується, але документи через межі не відхиляються. Сервер до 0.10.0 поля
+  не надсилає, і воно читається як `false`.
+- `OfflineLimits.RestoredAt` — коли межі повернули після зняття; від цього
+  часу рахують використаний час, якщо він пізніший за початок сесії чи місяця.
+- `OfflineSession.SubmitPausedAt` і `OfflineSession.SubmitFault` — коли й з
+  якою помилкою ДПС (`*prro.Fault`) зупинилося надсилання офлайн-пакетів.
+  Відновлюють через `OfflineSessions.Retry`.
+- `webhook.OfflineData.LimitsLifted` — подія `register.offline_limit`
+  надійшла при знятих межах і лише повідомляє.
+
+### Документація
+
+- Синхронізовано `testdata/openapi.yaml`: описи контракту переписано
+  спрощеною технічною мовою.
+
+## [0.3.0] — 2026-10-22
+
 Контракт API 0.8.0.
 
 ### Змінено
@@ -98,7 +123,9 @@
   `http.Handler`.
 - Тести відповідності контракту OpenAPI.
 
-[Unreleased]: https://github.com/prro-cloud/prro-go/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/prro-cloud/prro-go/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/prro-cloud/prro-go/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/prro-cloud/prro-go/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/prro-cloud/prro-go/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/prro-cloud/prro-go/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/prro-cloud/prro-go/releases/tag/v0.1.0

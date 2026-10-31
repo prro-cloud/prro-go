@@ -29,8 +29,9 @@ const (
 	EventRegisterOffline WebhookEvent = "register.offline"
 	// EventRegisterOnline — каса повернулася онлайн.
 	EventRegisterOnline WebhookEvent = "register.online"
-	// EventRegisterOfflineLimit — наближення до законних меж офлайн-сесії
-	// (36 і 168 годин).
+	// EventRegisterOfflineLimit — каса досягла законних меж офлайн-роботи
+	// (36 годин на сесію, 168 на місяць). Якщо межі знято, у даних
+	// LimitsLifted, і документи через межі не відхиляються.
 	EventRegisterOfflineLimit WebhookEvent = "register.offline_limit"
 	// EventRegisterOfflineAbandoned — від офлайн-сесії відмовлено; у даних —
 	// документи, яких ДПС не отримала.
