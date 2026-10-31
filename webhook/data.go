@@ -69,6 +69,9 @@ type OfflineData struct {
 	// для register.offline_limit (межі — 36 і 168 годин).
 	SessionUsed time.Duration `json:"-"`
 	MonthUsed   time.Duration `json:"-"`
+	// LimitsLifted — межі знято: подія register.offline_limit лише
+	// повідомляє, документи через межі не відхиляються.
+	LimitsLifted bool `json:"limits_lifted,omitempty"`
 }
 
 // UnmarshalJSON розбирає тривалості, які сервіс передає рядками Go
